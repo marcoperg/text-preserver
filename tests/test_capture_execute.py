@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import signal
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from text_preserver.capture import CaptureExecutionError, execute_capture
-from text_preserver.capture.execute import collection_lock
+from text_preserver.capture.execute import collection_lock, termination_signals_as_interrupts
 from text_preserver.config import load_config
 
 from tests.test_config import VALID_CONFIG
@@ -49,6 +51,11 @@ class CaptureExecutionTests(unittest.TestCase):
 
         self.assertFalse(config.project.archive_root.exists())
 
+    def test_termination_signal_uses_interruption_path(self) -> None:
+        with self.assertRaises(KeyboardInterrupt):
+            with termination_signals_as_interrupts():
+                os.kill(os.getpid(), signal.SIGTERM)
+
     def test_failed_process_is_preserved_in_status_records(self) -> None:
         invalid = VALID_CONFIG.replace(
             'seeds = ["https://example.org/index.html"]',
@@ -87,6 +94,7 @@ class CaptureExecutionTests(unittest.TestCase):
         self.assertEqual(source["status"], "failed")
         self.assertIsNotNone(source["exit_code"])
         self.assertTrue((result.capture_directory / "metadata/input-config.toml").is_file())
+        self.assertFalse((result.capture_directory.parent.parent / "LATEST").exists())
         self.assertEqual(
             (result.capture_directory / "metadata/input-config.toml").read_bytes(),
             config.input_bytes,
@@ -126,6 +134,7 @@ class CaptureExecutionTests(unittest.TestCase):
         self.assertEqual(capture["status"], "interrupted")
         self.assertEqual(capture["sources"][0]["status"], "interrupted")
         self.assertEqual(source["status"], "interrupted")
+        self.assertFalse((capture_directory.parent.parent / "LATEST").exists())
 
 
 if __name__ == "__main__":

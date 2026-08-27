@@ -12,10 +12,12 @@ from pathlib import Path
 import platform
 import secrets
 import shutil
+import signal
 import socket
 import stat
 import subprocess
 import sys
+import threading
 from types import MappingProxyType
 from typing import Any, Iterator, Mapping, Sequence
 
@@ -23,7 +25,7 @@ from text_preserver import __version__
 from text_preserver.capture.engines.wget import WgetCommand
 from text_preserver.capture.plan import CapturePlan, plan_capture
 from text_preserver.config import CollectionConfig, Config, SourceConfig
-from text_preserver.manifest import ManifestError, finalize_capture
+from text_preserver.manifest import ManifestError, finalize_capture, verify_capture
 
 
 class CaptureExecutionError(RuntimeError):
@@ -40,6 +42,7 @@ class _SourceInterrupted(KeyboardInterrupt):
 class CaptureResult:
     capture_directory: Path
     metadata: Mapping[str, Any]
+    latest_updated: bool = False
 
     @property
     def status(self) -> str:
@@ -48,6 +51,7 @@ class CaptureResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "capture_directory": str(self.capture_directory),
+            "latest_updated": self.latest_updated,
             **dict(self.metadata),
         }
 
@@ -92,7 +96,15 @@ def execute_capture(
             raise CaptureExecutionError(
                 f"cannot create capture directory {plan.capture_directory}: {exc}"
             ) from exc
-        return _execute_plan(config, collection, plan, operator_note, wget_version)
+        with termination_signals_as_interrupts():
+            return _execute_plan(
+                config,
+                collection,
+                plan,
+                operator_note,
+                wget_version,
+                eligible_for_latest=not source_ids,
+            )
 
 
 @contextmanager
@@ -128,12 +140,36 @@ def collection_lock(archive_root: Path, collection_id: str) -> Iterator[Path]:
             os.close(descriptor)
 
 
+@contextmanager
+def termination_signals_as_interrupts() -> Iterator[None]:
+    """Convert normal termination signals into the interruption status path."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    signals = [signal.SIGTERM]
+    if hasattr(signal, "SIGHUP"):
+        signals.append(signal.SIGHUP)
+    previous = {number: signal.getsignal(number) for number in signals}
+
+    def interrupt(_number: int, _frame: Any) -> None:
+        raise KeyboardInterrupt
+
+    try:
+        for number in signals:
+            signal.signal(number, interrupt)
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
 def _execute_plan(
     config: Config,
     collection: CollectionConfig,
     plan: CapturePlan,
     operator_note: str | None,
     wget_version: str,
+    eligible_for_latest: bool,
 ) -> CaptureResult:
     started_at = _utc_now()
     capture_metadata: dict[str, Any] = {
@@ -208,9 +244,18 @@ def _execute_plan(
         capture_metadata["error"] = f"fixity finalization failed: {exc}"
         _write_json(capture_path, capture_metadata)
         raise CaptureExecutionError(f"capture fixity finalization failed: {exc}") from exc
+    verification = verify_capture(plan.capture_directory)
+    if not verification.ok:
+        raise CaptureExecutionError(
+            "capture failed immediate fixity verification: " + "; ".join(verification.errors)
+        )
+    latest_updated = eligible_for_latest and capture_metadata["status"] == "complete"
+    if latest_updated:
+        _update_latest(plan.capture_directory)
     return CaptureResult(
         capture_directory=plan.capture_directory,
         metadata=MappingProxyType(capture_metadata),
+        latest_updated=latest_updated,
     )
 
 
@@ -434,6 +479,15 @@ def _write_json(path: Path, value: Any) -> None:
 
 def _write_text(path: Path, value: str) -> None:
     path.write_text(value, encoding="utf-8")
+
+
+def _update_latest(capture_directory: Path) -> None:
+    collection_root = capture_directory.parent.parent
+    relative = capture_directory.relative_to(collection_root).as_posix()
+    pointer = collection_root / "LATEST"
+    temporary = collection_root / ".LATEST.tmp"
+    temporary.write_text(relative + "\n", encoding="utf-8")
+    os.replace(temporary, pointer)
 
 
 def _generate_capture_id() -> str:

@@ -69,6 +69,25 @@ class DoctorTests(unittest.TestCase):
         self.assertFalse(archive_check.ok)
         self.assertIn("not a directory", archive_check.detail)
 
+    @patch(
+        "text_preserver.doctor._inspect_wget",
+        return_value=[DoctorCheck("GNU Wget", True, "test Wget")],
+    )
+    def test_reports_stale_running_capture(self, _mock_wget: object) -> None:
+        config_path = self.write_config()
+        capture = self.root / "data/archive/collections/test-collection/captures/stale"
+        capture.mkdir(parents=True)
+        (capture / "capture.json").write_text(
+            '{"status":"running"}\n',
+            encoding="utf-8",
+        )
+
+        checks = inspect_environment(config_path)
+
+        stale = next(check for check in checks if check.name == "stale captures")
+        self.assertFalse(stale.ok)
+        self.assertIn("1 running capture", stale.detail)
+
 
 if __name__ == "__main__":
     unittest.main()

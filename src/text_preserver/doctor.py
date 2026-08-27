@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import json
 import os
 from pathlib import Path
 import shutil
@@ -54,6 +55,7 @@ def inspect_environment(config_path: str | Path) -> list[DoctorCheck]:
     ):
         checks.append(_inspect_root(name, path))
     checks.append(_inspect_disk(config.project.archive_root))
+    checks.append(_inspect_running_captures(config.project.archive_root))
     return checks
 
 
@@ -131,3 +133,22 @@ def _format_bytes(value: int) -> str:
             return f"{amount:.1f} {unit}"
         amount /= 1024
     raise AssertionError("unreachable")
+
+
+def _inspect_running_captures(archive_root: Path) -> DoctorCheck:
+    captures = archive_root / "collections"
+    if not captures.exists():
+        return DoctorCheck("stale captures", True, "none")
+    running: list[str] = []
+    for path in captures.glob("*/captures/*/capture.json"):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if value.get("status") == "running":
+            running.append(str(path.parent))
+    return DoctorCheck(
+        "stale captures",
+        not running,
+        "none" if not running else f"{len(running)} running capture(s): {running[0]}",
+    )

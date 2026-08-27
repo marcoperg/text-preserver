@@ -2,7 +2,7 @@
 
 **Preserve vulnerable digital text collections and the context that makes them intelligible.**
 
-> **Status: early implementation.** Configuration validation, environment diagnostics, dry-run planning, guarded sequential Wget capture, SHA-256 finalization, and verification are available. `LATEST` pointers and collection-specific completeness analysis are not implemented yet.
+> **Status: early implementation.** Configuration validation, diagnostics, dry-run planning, guarded Wget capture, SHA-256 finalization, verification, and conservative `LATEST` pointers are available. Collection-specific completeness analysis is not implemented yet.
 
 `text-preserver` is a local-first system for preserving scholarly corpora, digital editions, historical text archives, specialist bibliographies, and old academic websites that may become unavailable or difficult to reconstruct.
 
@@ -87,7 +87,7 @@ Use `--source SOURCE_ID` to select individual sources and `--json` for a machine
 After reviewing the dry run, execute a supervised capture:
 
 ```bash
-text-preserver capture example-corpus \
+text-preserver capture COLLECTION_ID \
   --config collections.toml \
   --note "Supervised exploratory capture"
 ```
@@ -100,7 +100,7 @@ Verify a finalized capture:
 text-preserver verify /path/to/capture
 ```
 
-Verification checks object types, sizes, SHA-256 hashes, missing objects, and unexpected additions. Symlinks are rejected. Captures do not yet update a latest-capture pointer.
+Verification checks object types, sizes, SHA-256 hashes, missing objects, and unexpected additions. Symlinks are rejected. A complete, verified, unfiltered capture updates the collection's portable `LATEST` pointer; warning, partial, failed, interrupted, and source-filtered captures never do.
 
 Initial Wget plans ignore ambient proxies and do not follow redirects because Wget's domain filter does not constrain redirect targets. Redirect destinations must be reviewed and configured as explicit seeds until redirect-aware host enforcement is implemented.
 
