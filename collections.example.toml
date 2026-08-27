@@ -1,0 +1,69 @@
+[project]
+archive_root = "./data/archive"
+derived_root = "./data/derived"
+workspace_root = "./data/workspace"
+operator = "Your name or organization"
+contact = "mailto:you@example.org"
+user_agent = "text-preserver/0.1 (+mailto:you@example.org)"
+
+[defaults.capture]
+engine = "wget"
+recursive = true
+level = "inf"
+page_requisites = true
+convert_links = true
+adjust_extension = true
+mirror = true
+warc = true
+warc_cdx = true
+warc_max_size = "1G"
+robots = true
+wait = 1.0
+random_wait = true
+timeout = 30
+tries = 3
+retry_connrefused = true
+span_hosts = false
+quota = "2G"
+
+[[collections]]
+id = "example-corpus"
+title = "Example Corpus"
+homepage = "https://example.org/"
+description = "Replace this disabled example with a reviewed collection recipe."
+risk_note = "Record why this collection is vulnerable or difficult to reconstruct."
+rights_note = "Record known rights without assuming that capture permits redistribution."
+tags = ["example"]
+enabled = false
+
+[[collections.sources]]
+id = "web"
+kind = "web"
+title = "Historical public website"
+required = true
+seeds = [
+  "https://example.org/",
+]
+allowed_hosts = ["example.org"]
+
+[collections.sources.capture]
+recursive = true
+quota = "100M"
+
+[[collections.sources]]
+id = "canonical-dataset"
+kind = "http-file"
+title = "Canonical dataset"
+required = false
+seeds = [
+  "https://example.org/corpus.xml",
+]
+allowed_hosts = ["example.org"]
+
+[collections.sources.capture]
+recursive = false
+page_requisites = false
+convert_links = false
+adjust_extension = false
+content_disposition = true
+quota = "10M"

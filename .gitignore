@@ -1,0 +1,30 @@
+# Local configuration
+collections.toml
+
+# Preservation and research data
+data/
+archive/
+derived/
+workspace/
+captures/
+
+# Web archive formats
+*.warc
+*.warc.gz
+*.wacz
+*.cdx
+*.cdxj
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+build/
+dist/
+
+# Local state
+*.log
+.DS_Store

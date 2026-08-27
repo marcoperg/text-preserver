@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://text-preserver.invalid/schemas/fixity-manifest.schema.json",
+  "title": "text-preserver SHA-256 fixity manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "algorithm", "created_at", "files"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "algorithm": { "const": "sha256" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "type", "size", "sha256"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+          },
+          "type": { "enum": ["file", "symlink"] },
+          "size": { "type": "integer", "minimum": 0 },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "target": { "type": "string" }
+        }
+      }
+    }
+  }
+}
