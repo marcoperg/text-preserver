@@ -23,6 +23,7 @@ from text_preserver import __version__
 from text_preserver.capture.engines.wget import WgetCommand
 from text_preserver.capture.plan import CapturePlan, plan_capture
 from text_preserver.config import CollectionConfig, Config, SourceConfig
+from text_preserver.manifest import ManifestError, finalize_capture
 
 
 class CaptureExecutionError(RuntimeError):
@@ -200,6 +201,13 @@ def _execute_plan(
     capture_metadata["status"] = _aggregate_status(results)
     capture_metadata["ended_at"] = _utc_now()
     _write_json(capture_path, capture_metadata)
+    try:
+        finalize_capture(plan.capture_directory)
+    except (ManifestError, OSError) as exc:
+        capture_metadata["status"] = "failed"
+        capture_metadata["error"] = f"fixity finalization failed: {exc}"
+        _write_json(capture_path, capture_metadata)
+        raise CaptureExecutionError(f"capture fixity finalization failed: {exc}") from exc
     return CaptureResult(
         capture_directory=plan.capture_directory,
         metadata=MappingProxyType(capture_metadata),

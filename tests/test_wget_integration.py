@@ -10,6 +10,7 @@ import unittest
 
 from text_preserver.capture import execute_capture, plan_capture
 from text_preserver.config import load_config
+from text_preserver.manifest import verify_capture
 
 
 def wget_has_warc_support() -> bool:
@@ -159,6 +160,10 @@ allowed_hosts = ["127.0.0.1"]
         self.assertTrue((source_root / "metadata/command.json").is_file())
         self.assertTrue((source_root / "metadata/result.json").is_file())
         self.assertTrue((source_root / "seeds.txt").is_file())
+        self.assertTrue((capture.capture_directory / "manifest-sha256.json").is_file())
+        self.assertTrue((capture.capture_directory / "SHA256SUMS").is_file())
+        verification = verify_capture(capture.capture_directory)
+        self.assertTrue(verification.ok, verification.errors)
 
     def test_plan_does_not_follow_redirects(self) -> None:
         result, _source_root = self.execute_plan("/redirect")

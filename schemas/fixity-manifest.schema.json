@@ -21,10 +21,9 @@
             "minLength": 1,
             "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
           },
-          "type": { "enum": ["file", "symlink"] },
+          "type": { "enum": ["file", "directory"] },
           "size": { "type": "integer", "minimum": 0 },
-          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-          "target": { "type": "string" }
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
         }
       }
     }

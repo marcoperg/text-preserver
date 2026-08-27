@@ -17,6 +17,7 @@ from text_preserver.capture import (
 )
 from text_preserver.config import ConfigError, load_config
 from text_preserver.doctor import inspect_environment
+from text_preserver.manifest import verify_capture
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -70,6 +71,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     capture.add_argument("--note", help="operator note preserved with the capture")
     capture.add_argument("--json", action="store_true", help="emit machine-readable plan")
+
+    verify = subparsers.add_parser(
+        "verify",
+        help="verify a finalized capture against its SHA-256 manifest",
+    )
+    verify.add_argument("path", type=Path, help="capture directory or collection with LATEST")
+    verify.add_argument("--json", action="store_true", help="emit machine-readable results")
     return parser
 
 
@@ -126,4 +134,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"Capture: {result.capture_directory}")
             print(f"Status: {result.status}")
         return 0 if result.status in {"complete", "complete_with_warnings"} else 1
+    if args.command == "verify":
+        result = verify_capture(args.path)
+        if args.json:
+            print(json.dumps(result.to_dict(), indent=2))
+        else:
+            marker = "ok" if result.ok else "FAIL"
+            print(f"[{marker}] {result.capture_directory}: {result.checked_objects} object(s)")
+            for error in result.errors:
+                print(f"  {error}")
+        return 0 if result.ok else 1
     raise AssertionError(f"unhandled command: {args.command}")

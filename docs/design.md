@@ -2,7 +2,7 @@
 
 **Preserve vulnerable digital text collections and the context that makes them intelligible.**
 
-> **Status: early implementation.** Configuration validation, `doctor`, dry-run planning, guarded sequential Wget execution, status and provenance records, and a localhost integration harness exist. Fixity manifests, verification, and latest-capture pointers do not. Other command examples in this document describe the target interface unless explicitly marked as implemented.
+> **Status: early implementation.** Configuration validation, `doctor`, dry-run planning, guarded sequential Wget execution, status and provenance records, SHA-256 finalization, verification, and a localhost integration harness exist. Latest-capture pointers and collection-specific completeness analysis do not. Other command examples in this document describe the target interface unless explicitly marked as implemented.
 
 `text-preserver` is a preservation-first system for scholarly corpora, digital editions, historical text archives, specialist bibliographies, old academic websites, and other text-centered collections that may become unavailable or difficult to reconstruct.
 

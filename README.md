@@ -2,7 +2,7 @@
 
 **Preserve vulnerable digital text collections and the context that makes them intelligible.**
 
-> **Status: early implementation.** Configuration validation, environment diagnostics, dry-run planning, and guarded sequential Wget capture are available. Fixity manifests, verification, and `LATEST` pointers are not implemented yet.
+> **Status: early implementation.** Configuration validation, environment diagnostics, dry-run planning, guarded sequential Wget capture, SHA-256 finalization, and verification are available. `LATEST` pointers and collection-specific completeness analysis are not implemented yet.
 
 `text-preserver` is a local-first system for preserving scholarly corpora, digital editions, historical text archives, specialist bibliographies, and old academic websites that may become unavailable or difficult to reconstruct.
 
@@ -92,7 +92,15 @@ text-preserver capture example-corpus \
   --note "Supervised exploratory capture"
 ```
 
-Execution creates a new capture directory atomically, prevents overlapping captures of the same collection, preserves the input and resolved configuration, records the environment and exact commands, and writes source and collection status records. Failed and interrupted captures remain available for diagnosis. It does not yet finalize a fixity manifest or update a latest-capture pointer.
+Execution creates a new capture directory atomically, prevents overlapping captures of the same collection, preserves the input and resolved configuration, records the environment and exact commands, and writes source and collection status records. Failed and interrupted captures remain available for diagnosis. Completed attempts receive `manifest-sha256.json` and `SHA256SUMS`; interrupted attempts remain unfinalized for honest recovery.
+
+Verify a finalized capture:
+
+```bash
+text-preserver verify /path/to/capture
+```
+
+Verification checks object types, sizes, SHA-256 hashes, missing objects, and unexpected additions. Symlinks are rejected. Captures do not yet update a latest-capture pointer.
 
 Initial Wget plans ignore ambient proxies and do not follow redirects because Wget's domain filter does not constrain redirect targets. Redirect destinations must be reviewed and configured as explicit seeds until redirect-aware host enforcement is implemented.
 
