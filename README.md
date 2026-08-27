@@ -2,7 +2,7 @@
 
 **Preserve vulnerable digital text collections and the context that makes them intelligible.**
 
-> **Status: early implementation.** Configuration validation, environment diagnostics, and side-effect-free capture planning are available. Capture execution and verification are not implemented yet.
+> **Status: early implementation.** Configuration validation, environment diagnostics, dry-run planning, and guarded sequential Wget capture are available. Fixity manifests, verification, and `LATEST` pointers are not implemented yet.
 
 `text-preserver` is a local-first system for preserving scholarly corpora, digital editions, historical text archives, specialist bibliographies, and old academic websites that may become unavailable or difficult to reconstruct.
 
@@ -77,12 +77,22 @@ text-preserver doctor --config collections.toml
 Inspect the exact Wget commands and paths for a collection without writing files or making network requests:
 
 ```bash
-text-preserver capture example-corpus \
+text-preserver capture COLLECTION_ID \
   --config collections.toml \
   --dry-run
 ```
 
-Use `--source SOURCE_ID` to select individual sources and `--json` for a machine-readable plan. The test suite executes these plans only against a localhost fixture and verifies recursive mirror, WARC, CDX, log, and redirect behavior. CLI capture execution remains intentionally disabled until status records and locking are implemented.
+Use `--source SOURCE_ID` to select individual sources and `--json` for a machine-readable plan. The test suite executes these plans only against a localhost fixture and verifies recursive mirror, WARC, CDX, log, and redirect behavior.
+
+After reviewing the dry run, execute a supervised capture:
+
+```bash
+text-preserver capture example-corpus \
+  --config collections.toml \
+  --note "Supervised exploratory capture"
+```
+
+Execution creates a new capture directory atomically, prevents overlapping captures of the same collection, preserves the input and resolved configuration, records the environment and exact commands, and writes source and collection status records. Failed and interrupted captures remain available for diagnosis. It does not yet finalize a fixity manifest or update a latest-capture pointer.
 
 Initial Wget plans ignore ambient proxies and do not follow redirects because Wget's domain filter does not constrain redirect targets. Redirect destinations must be reviewed and configured as explicit seeds until redirect-aware host enforcement is implemented.
 

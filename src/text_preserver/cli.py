@@ -9,7 +9,12 @@ import sys
 from typing import Sequence
 
 from text_preserver import __version__
-from text_preserver.capture import CapturePlanError, plan_capture
+from text_preserver.capture import (
+    CaptureExecutionError,
+    CapturePlanError,
+    execute_capture,
+    plan_capture,
+)
 from text_preserver.config import ConfigError, load_config
 from text_preserver.doctor import inspect_environment
 
@@ -37,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     capture = subparsers.add_parser(
         "capture",
-        help="plan a collection capture",
+        help="capture a configured collection",
     )
     capture.add_argument("collection_id", help="configured collection ID")
     capture.add_argument(
@@ -63,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="show resolved commands without writing files or making requests",
     )
+    capture.add_argument("--note", help="operator note preserved with the capture")
     capture.add_argument("--json", action="store_true", help="emit machine-readable plan")
     return parser
 
@@ -79,32 +85,45 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"[{marker:4}] {check.name}: {check.detail}")
         return 0 if all(check.ok for check in checks) else 1
     if args.command == "capture":
-        if not args.dry_run:
-            print(
-                "capture execution is not implemented; inspect the plan with --dry-run",
-                file=sys.stderr,
-            )
-            return 2
         try:
             config = load_config(args.config)
-            plan = plan_capture(
-                config,
-                args.collection_id,
-                source_ids=args.source_ids,
-                capture_id=args.capture_id,
-            )
-        except (ConfigError, CapturePlanError) as exc:
-            print(f"capture plan error: {exc}", file=sys.stderr)
+            if args.dry_run:
+                plan = plan_capture(
+                    config,
+                    args.collection_id,
+                    source_ids=args.source_ids,
+                    capture_id=args.capture_id,
+                )
+            else:
+                result = execute_capture(
+                    config,
+                    args.collection_id,
+                    source_ids=args.source_ids,
+                    capture_id=args.capture_id,
+                    operator_note=args.note,
+                )
+        except (ConfigError, CapturePlanError, CaptureExecutionError) as exc:
+            print(f"capture error: {exc}", file=sys.stderr)
             return 2
+        except KeyboardInterrupt:
+            print("capture interrupted", file=sys.stderr)
+            return 130
+        if args.dry_run:
+            if args.json:
+                print(json.dumps(plan.to_dict(), indent=2))
+            else:
+                print(f"Collection: {plan.collection_id}")
+                print(f"Capture ID: {plan.capture_id}")
+                print(f"Capture directory: {plan.capture_directory}")
+                for command in plan.commands:
+                    print(f"\nSource: {command.source_id}")
+                    print(f"Working directory: {command.working_directory}")
+                    print(f"Command: {command.shell_command}")
+            return 0
         if args.json:
-            print(json.dumps(plan.to_dict(), indent=2))
+            print(json.dumps(result.to_dict(), indent=2))
         else:
-            print(f"Collection: {plan.collection_id}")
-            print(f"Capture ID: {plan.capture_id}")
-            print(f"Capture directory: {plan.capture_directory}")
-            for command in plan.commands:
-                print(f"\nSource: {command.source_id}")
-                print(f"Working directory: {command.working_directory}")
-                print(f"Command: {command.shell_command}")
-        return 0
+            print(f"Capture: {result.capture_directory}")
+            print(f"Status: {result.status}")
+        return 0 if result.status in {"complete", "complete_with_warnings"} else 1
     raise AssertionError(f"unhandled command: {args.command}")

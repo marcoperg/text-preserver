@@ -6,7 +6,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
+from text_preserver.capture import CaptureResult
 from text_preserver.cli import main
 
 from tests.test_config import VALID_CONFIG
@@ -62,16 +64,22 @@ class CaptureCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual([item["source_id"] for item in document["commands"]], ["dataset"])
 
-    def test_execution_remains_disabled(self) -> None:
-        errors = StringIO()
+    @patch("text_preserver.cli.execute_capture")
+    def test_execution_reports_capture_status(self, mock_execute: object) -> None:
+        capture_directory = self.root / "archive/capture"
+        mock_execute.return_value = CaptureResult(  # type: ignore[attr-defined]
+            capture_directory=capture_directory,
+            metadata={"status": "complete", "capture_id": "test"},
+        )
+        output = StringIO()
 
-        with redirect_stderr(errors):
+        with redirect_stdout(output):
             exit_code = main(
                 ["capture", "test-collection", "-c", str(self.config_path)]
             )
 
-        self.assertEqual(exit_code, 2)
-        self.assertIn("execution is not implemented", errors.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Status: complete", output.getvalue())
         self.assertFalse((self.root / "data").exists())
 
     def test_unknown_collection_returns_usage_error(self) -> None:

@@ -8,7 +8,7 @@ import tempfile
 import threading
 import unittest
 
-from text_preserver.capture import plan_capture
+from text_preserver.capture import execute_capture, plan_capture
 from text_preserver.config import load_config
 
 
@@ -137,9 +137,16 @@ allowed_hosts = ["127.0.0.1"]
         return result, command.working_directory
 
     def test_recursive_plan_creates_mirror_warc_cdx_and_log(self) -> None:
-        result, source_root = self.execute_plan("/index.html")
+        config = load_config(self.write_config("/index.html"))
+        capture = execute_capture(
+            config,
+            "local-fixture",
+            capture_id="20260827T120000Z-a1b2c3",
+            operator_note="Local integration capture",
+        )
+        source_root = capture.capture_directory / "sources/web"
 
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(capture.status, "complete")
         self.assertIn("/index.html", self.requests)
         self.assertIn("/child.html", self.requests)
         self.assertIn("/style.css", self.requests)
@@ -148,6 +155,10 @@ allowed_hosts = ["127.0.0.1"]
         self.assertTrue(list((source_root / "warc").glob("capture*.warc.gz")))
         self.assertTrue(list((source_root / "warc").glob("capture*.cdx")))
         self.assertTrue((source_root / "logs/wget.log").is_file())
+        self.assertTrue((capture.capture_directory / "capture.json").is_file())
+        self.assertTrue((source_root / "metadata/command.json").is_file())
+        self.assertTrue((source_root / "metadata/result.json").is_file())
+        self.assertTrue((source_root / "seeds.txt").is_file())
 
     def test_plan_does_not_follow_redirects(self) -> None:
         result, _source_root = self.execute_plan("/redirect")

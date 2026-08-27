@@ -138,6 +138,7 @@ class CollectionConfig:
 @dataclass(frozen=True)
 class Config:
     path: Path
+    input_bytes: bytes
     project: ProjectConfig
     defaults_capture: Mapping[str, Any]
     collections: tuple[CollectionConfig, ...]
@@ -147,14 +148,16 @@ def load_config(path: str | Path) -> Config:
     """Load a TOML configuration file and return its resolved model."""
     config_path = Path(path).expanduser().resolve()
     try:
-        with config_path.open("rb") as stream:
-            raw = tomllib.load(stream)
+        input_bytes = config_path.read_bytes()
+        raw = tomllib.loads(input_bytes.decode("utf-8"))
     except FileNotFoundError as exc:
         raise ConfigError(f"configuration file does not exist: {config_path}") from exc
     except OSError as exc:
         raise ConfigError(f"cannot read configuration {config_path}: {exc}") from exc
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"invalid TOML in {config_path}: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise ConfigError(f"configuration is not valid UTF-8: {config_path}") from exc
 
     _only_keys(raw, {"project", "defaults", "collections"}, "configuration")
     project = _load_project(_table(raw.get("project"), "project"), config_path.parent)
@@ -179,6 +182,7 @@ def load_config(path: str | Path) -> Config:
 
     return Config(
         path=config_path,
+        input_bytes=input_bytes,
         project=project,
         defaults_capture=MappingProxyType(defaults_capture),
         collections=tuple(collections),
