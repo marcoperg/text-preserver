@@ -2,7 +2,7 @@
 
 **Preserve vulnerable digital text collections and the context that makes them intelligible.**
 
-> **Status: early implementation.** Configuration validation, diagnostics, dry-run planning, guarded Wget capture, SHA-256 finalization, verification, and conservative `LATEST` pointers are available. Collection-specific completeness analysis is not implemented yet.
+> **Status: early implementation.** Configuration validation, public collection recipes, diagnostics, dry-run planning, guarded Wget capture, SHA-256 finalization, verification, conservative `LATEST` pointers, and the first ETCSL inventory check are available.
 
 `text-preserver` is a local-first system for preserving scholarly corpora, digital editions, historical text archives, specialist bibliographies, and old academic websites that may become unavailable or difficult to reconstruct.
 
@@ -70,9 +70,13 @@ Create a local configuration and inspect it without making network requests or a
 ```bash
 cp collections.example.toml collections.toml
 text-preserver doctor --config collections.toml
+text-preserver collections list --config collections.toml
+text-preserver collections show etcsl --config collections.toml
 ```
 
-`doctor` validates collection and source structure, rejects unsafe scope and credential-bearing arguments, checks GNU Wget WARC support, checks storage locations, and reports available space.
+The example configuration references the public ETCSL recipe in `collections/etcsl/collection.toml`. Local configuration owns operator identity, storage paths, and capture defaults; recipes own public collection metadata, sources, scope, and analysis settings. Recipe files are resolved relative to the local configuration and preserved with captures for provenance.
+
+`doctor` validates collection and source structure, rejects unsafe scope and credential-bearing arguments, checks GNU Wget WARC support, checks storage locations, and reports available space. `collections list/show` display the fully resolved configuration without making requests.
 
 Inspect the exact Wget commands and paths for a collection without writing files or making network requests:
 
@@ -119,6 +123,8 @@ ETCSL
 ```
 
 The initial milestone is to capture the website and canonical deposit independently, preserve their provenance, verify their bytes, and report whether the expected compositions and representations were captured.
+
+The ETCSL recipe includes a fixture-tested catalogue extractor. A bounded live catalogue check on 2026-08-27 found 394 transliterations and 381 translations; 13 category-0 catalogue compositions are intentionally untranslated. See [`collections/etcsl/README.md`](collections/etcsl/README.md) for scope and usage.
 
 [GRETIL](https://gretil.sub.uni-goettingen.de/) is the proposed second collection and generalization test because it adds multiple languages, legacy encodings, TEI migrations, repository lineages, and representation-specific rights.
 

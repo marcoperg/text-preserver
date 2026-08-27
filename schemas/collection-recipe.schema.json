@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://text-preserver.invalid/schemas/collection-recipe.schema.json",
+  "title": "text-preserver collection recipe",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["collection"],
+  "properties": {
+    "collection": {
+      "$ref": "config.schema.json#/$defs/collection"
+    }
+  }
+}

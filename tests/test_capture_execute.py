@@ -43,11 +43,14 @@ class CaptureExecutionTests(unittest.TestCase):
         )
 
     def test_disabled_collection_cannot_execute(self) -> None:
-        repository_root = Path(__file__).parents[1]
-        config = load_config(repository_root / "collections.example.toml")
+        self.config_path.write_text(
+            VALID_CONFIG.replace("enabled = true", "enabled = false"),
+            encoding="utf-8",
+        )
+        config = load_config(self.config_path)
 
         with self.assertRaisesRegex(CaptureExecutionError, "is disabled"):
-            execute_capture(config, "example-corpus", source_ids=["web"])
+            execute_capture(config, "test-collection", source_ids=["web"])
 
         self.assertFalse(config.project.archive_root.exists())
 

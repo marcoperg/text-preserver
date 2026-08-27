@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from text_preserver import __version__
 from text_preserver.capture import (
@@ -15,7 +15,7 @@ from text_preserver.capture import (
     execute_capture,
     plan_capture,
 )
-from text_preserver.config import ConfigError, load_config
+from text_preserver.config import CollectionConfig, ConfigError, load_config
 from text_preserver.doctor import inspect_environment
 from text_preserver.manifest import verify_capture
 
@@ -40,6 +40,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="TOML configuration file (default: collections.toml)",
     )
     doctor.add_argument("--json", action="store_true", help="emit machine-readable results")
+
+    collections = subparsers.add_parser(
+        "collections",
+        help="inspect configured collections",
+    )
+    collection_commands = collections.add_subparsers(dest="collections_command", required=True)
+    collections_list = collection_commands.add_parser("list", help="list configured collections")
+    _add_config_argument(collections_list)
+    collections_list.add_argument("--json", action="store_true", help="emit machine-readable results")
+    collections_show = collection_commands.add_parser("show", help="show one resolved collection")
+    collections_show.add_argument("collection_id", help="configured collection ID")
+    _add_config_argument(collections_show)
+    collections_show.add_argument("--json", action="store_true", help="emit machine-readable results")
 
     capture = subparsers.add_parser(
         "capture",
@@ -92,6 +105,44 @@ def main(argv: Sequence[str] | None = None) -> int:
                 marker = "ok" if check.ok else "FAIL"
                 print(f"[{marker:4}] {check.name}: {check.detail}")
         return 0 if all(check.ok for check in checks) else 1
+    if args.command == "collections":
+        try:
+            config = load_config(args.config)
+            if args.collections_command == "list":
+                values = [_collection_summary(collection) for collection in config.collections]
+                if args.json:
+                    print(json.dumps({"collections": values}, indent=2))
+                else:
+                    for value in values:
+                        state = "enabled" if value["enabled"] else "disabled"
+                        print(
+                            f"{value['id']}\t{state}\t{value['source_count']} source(s)\t{value['title']}"
+                        )
+                return 0
+            collection = next(
+                (item for item in config.collections if item.id == args.collection_id),
+                None,
+            )
+            if collection is None:
+                raise ConfigError(f"unknown collection: {args.collection_id}")
+            value = _collection_detail(collection)
+            if args.json:
+                print(json.dumps(value, indent=2))
+            else:
+                print(f"ID: {value['id']}")
+                print(f"Title: {value['title']}")
+                print(f"Enabled: {'yes' if value['enabled'] else 'no'}")
+                print(f"Recipe: {value['recipe_path'] or 'inline configuration'}")
+                print(f"Homepage: {value['homepage'] or ''}")
+                print(f"Sources: {len(value['sources'])}")
+                for source in value["sources"]:
+                    requirement = "required" if source["required"] else "optional"
+                    print(f"  {source['id']}: {source['kind']}, {requirement}")
+                print(f"Analysis: {json.dumps(value['analysis'], sort_keys=True)}")
+            return 0
+        except ConfigError as exc:
+            print(f"collections error: {exc}", file=sys.stderr)
+            return 2
     if args.command == "capture":
         try:
             config = load_config(args.config)
@@ -145,3 +196,57 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"  {error}")
         return 0 if result.ok else 1
     raise AssertionError(f"unhandled command: {args.command}")
+
+
+def _add_config_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "-c",
+        "--config",
+        type=Path,
+        default=Path("collections.toml"),
+        help="TOML configuration file (default: collections.toml)",
+    )
+
+
+def _collection_summary(collection: CollectionConfig) -> dict[str, object]:
+    return {
+        "id": collection.id,
+        "title": collection.title,
+        "enabled": collection.enabled,
+        "source_count": len(collection.sources),
+        "recipe_path": str(collection.recipe_path) if collection.recipe_path else None,
+    }
+
+
+def _collection_detail(collection: CollectionConfig) -> dict[str, object]:
+    return {
+        **_collection_summary(collection),
+        "homepage": collection.homepage,
+        "description": collection.description,
+        "risk_note": collection.risk_note,
+        "rights_note": collection.rights_note,
+        "tags": list(collection.tags),
+        "capture": _plain(collection.capture),
+        "analysis": _plain(collection.analysis),
+        "sources": [
+            {
+                "id": source.id,
+                "kind": source.kind,
+                "title": source.title,
+                "description": source.description,
+                "required": source.required,
+                "seeds": list(source.seeds),
+                "allowed_hosts": list(source.allowed_hosts),
+                "capture": _plain(source.capture),
+            }
+            for source in collection.sources
+        ],
+    }
+
+
+def _plain(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_plain(item) for item in value]
+    return value

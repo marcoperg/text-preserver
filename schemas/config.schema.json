@@ -4,10 +4,20 @@
   "title": "text-preserver configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["project", "collections"],
+  "required": ["project"],
+  "anyOf": [
+    { "required": ["collections"] },
+    { "required": ["recipes"] }
+  ],
   "properties": {
     "project": { "$ref": "#/$defs/project" },
     "defaults": { "$ref": "#/$defs/defaults" },
+    "recipes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
     "collections": {
       "type": "array",
       "minItems": 1,

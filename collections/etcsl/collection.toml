@@ -1,0 +1,81 @@
+[collection]
+id = "etcsl"
+title = "Electronic Text Corpus of Sumerian Literature"
+homepage = "https://etcsl.orinst.ox.ac.uk/"
+description = "Sumerian literary compositions with transliterations, English translations, bibliography, and XML source data."
+risk_note = "Project funding ended in 2006; the historical interface depends on aging CGI and server infrastructure."
+rights_note = "Public access does not imply permission to redistribute captures; preserve the site's notices and repository metadata."
+tags = ["sumerian", "literature", "philology", "digital-humanities"]
+enabled = true
+
+[collection.capture]
+wait = 2.0
+random_wait = true
+timeout = 30
+tries = 2
+quota = "250M"
+limit_rate = "250K"
+
+[collection.analysis]
+inventory_adapter = "inventory.py"
+expected_work_count = 394
+required_representation_kinds = ["transliteration"]
+
+[[collection.sources]]
+id = "historical-web"
+kind = "web"
+title = "Historical ETCSL website and catalogue"
+description = "Project documentation, complete catalogue, translations, transliterations, bibliography, and supporting assets."
+required = true
+seeds = [
+  "https://etcsl.orinst.ox.ac.uk/",
+  "https://etcsl.orinst.ox.ac.uk/edition2/etcslsitemap.html",
+  "https://etcsl.orinst.ox.ac.uk/edition2/etcslmanual.php",
+  "https://etcsl.orinst.ox.ac.uk/cgi-bin/etcsl.cgi?text=all",
+]
+allowed_hosts = ["etcsl.orinst.ox.ac.uk"]
+
+[collection.sources.capture]
+recursive = true
+level = 2
+page_requisites = true
+convert_links = true
+adjust_extension = true
+quota = "250M"
+
+[[collection.sources]]
+id = "ota-record"
+kind = "web"
+title = "Oxford Text Archive repository record"
+description = "Institutional metadata and preservation context for OTA deposit 2518."
+required = true
+seeds = [
+  "https://ota.bodleian.ox.ac.uk/repository/xmlui/handle/20.500.12024/2518",
+]
+allowed_hosts = ["ota.bodleian.ox.ac.uk"]
+
+[collection.sources.capture]
+recursive = false
+page_requisites = false
+convert_links = false
+adjust_extension = false
+quota = "10M"
+
+[[collection.sources]]
+id = "ota-dataset"
+kind = "http-file"
+title = "Canonical ETCSL XML deposit"
+description = "ZIP archive of the XML source corpus deposited with the Oxford Text Archive."
+required = true
+seeds = [
+  "https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/etcsl.zip?sequence=11&isAllowed=y",
+]
+allowed_hosts = ["ota.bodleian.ox.ac.uk"]
+
+[collection.sources.capture]
+recursive = false
+page_requisites = false
+convert_links = false
+adjust_extension = false
+content_disposition = true
+quota = "10M"

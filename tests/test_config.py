@@ -161,6 +161,62 @@ allowed_hosts = ["example.org"]
 
         self.assertEqual(config.collections[0].id, "example-corpus")
 
+    def test_loads_collection_recipe_relative_to_configuration(self) -> None:
+        recipe = self.root / "recipes/example.toml"
+        recipe.parent.mkdir()
+        recipe.write_text(
+            """
+[collection]
+id = "recipe-collection"
+title = "Recipe Collection"
+
+[[collection.sources]]
+id = "web"
+kind = "web"
+title = "Website"
+seeds = ["https://example.org/"]
+allowed_hosts = ["example.org"]
+""".strip(),
+            encoding="utf-8",
+        )
+        operator_config = 'recipes = ["recipes/example.toml"]\n\n'
+        operator_config += VALID_CONFIG.split("[[collections]]", 1)[0]
+
+        config = load_config(self.write_config(operator_config))
+
+        self.assertEqual([item.id for item in config.collections], ["recipe-collection"])
+        self.assertEqual(config.collections[0].recipe_path, recipe.resolve())
+        self.assertEqual(config.recipe_input_bytes[recipe.resolve()], recipe.read_bytes())
+
+    def test_rejects_duplicate_ids_across_inline_and_recipe_collections(self) -> None:
+        recipe = self.root / "recipe.toml"
+        recipe.write_text(
+            """
+[collection]
+id = "test-collection"
+title = "Duplicate"
+
+[[collection.sources]]
+id = "web"
+kind = "web"
+title = "Website"
+seeds = ["https://example.org/"]
+allowed_hosts = ["example.org"]
+""".strip(),
+            encoding="utf-8",
+        )
+        config = 'recipes = ["recipe.toml"]\n\n' + VALID_CONFIG
+
+        with self.assertRaisesRegex(ConfigError, "duplicate collection ID"):
+            load_config(self.write_config(config))
+
+    def test_rejects_missing_recipe(self) -> None:
+        operator_config = 'recipes = ["missing.toml"]\n\n'
+        operator_config += VALID_CONFIG.split("[[collections]]", 1)[0]
+
+        with self.assertRaisesRegex(ConfigError, "collection recipe does not exist"):
+            load_config(self.write_config(operator_config))
+
     def test_repository_schemas_are_valid_json(self) -> None:
         schema_root = Path(__file__).parents[1] / "schemas"
         for path in schema_root.glob("*.json"):

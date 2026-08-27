@@ -1,3 +1,5 @@
+recipes = ["collections/etcsl/collection.toml"]
+
 [project]
 archive_root = "./data/archive"
 derived_root = "./data/derived"

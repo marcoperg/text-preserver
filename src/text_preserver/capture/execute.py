@@ -192,6 +192,10 @@ def _execute_plan(
         metadata_root = plan.capture_directory / "metadata"
         metadata_root.mkdir()
         (metadata_root / "input-config.toml").write_bytes(config.input_bytes)
+        if collection.recipe_path is not None:
+            (metadata_root / "input-collection-recipe.toml").write_bytes(
+                config.recipe_input_bytes[collection.recipe_path]
+            )
         _write_json(
             metadata_root / "environment.json",
             _environment_metadata(wget_version),
@@ -372,6 +376,7 @@ def _collection_dict(collection: CollectionConfig) -> dict[str, Any]:
         "rights_note": collection.rights_note,
         "tags": list(collection.tags),
         "enabled": collection.enabled,
+        "recipe_path": str(collection.recipe_path) if collection.recipe_path else None,
         "capture": _plain(collection.capture),
         "analysis": _plain(collection.analysis),
         "sources": [_source_dict(source) for source in collection.sources],

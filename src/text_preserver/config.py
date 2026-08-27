@@ -133,6 +133,7 @@ class CollectionConfig:
     sources: tuple[SourceConfig, ...]
     capture: Mapping[str, Any]
     analysis: Mapping[str, Any]
+    recipe_path: Path | None
 
 
 @dataclass(frozen=True)
@@ -142,6 +143,7 @@ class Config:
     project: ProjectConfig
     defaults_capture: Mapping[str, Any]
     collections: tuple[CollectionConfig, ...]
+    recipe_input_bytes: Mapping[Path, bytes]
 
 
 def load_config(path: str | Path) -> Config:
@@ -159,7 +161,7 @@ def load_config(path: str | Path) -> Config:
     except UnicodeDecodeError as exc:
         raise ConfigError(f"configuration is not valid UTF-8: {config_path}") from exc
 
-    _only_keys(raw, {"project", "defaults", "collections"}, "configuration")
+    _only_keys(raw, {"project", "defaults", "collections", "recipes"}, "configuration")
     project = _load_project(_table(raw.get("project"), "project"), config_path.parent)
 
     defaults_table = _table(raw.get("defaults", {}), "defaults")
@@ -169,16 +171,40 @@ def load_config(path: str | Path) -> Config:
         _load_capture_settings(defaults_table.get("capture", {}), "defaults.capture")
     )
 
-    collection_values = _list(raw.get("collections"), "collections", nonempty=True)
+    collection_values = _list(raw.get("collections", []), "collections")
     collections: list[CollectionConfig] = []
     seen_collection_ids: set[str] = set()
     for index, value in enumerate(collection_values):
         label = f"collections[{index}]"
-        collection = _load_collection(value, label, defaults_capture)
+        collection = _load_collection(value, label, defaults_capture, recipe_path=None)
         if collection.id in seen_collection_ids:
             raise ConfigError(f"{label}.id: duplicate collection ID {collection.id!r}")
         seen_collection_ids.add(collection.id)
         collections.append(collection)
+
+    recipe_values = _string_list(raw.get("recipes", []), "recipes")
+    if len(recipe_values) != len(set(recipe_values)):
+        raise ConfigError("recipes: duplicate recipe path")
+    recipe_input_bytes: dict[Path, bytes] = {}
+    for value in recipe_values:
+        recipe_path = _resolve_path(value, config_path.parent)
+        recipe_raw, recipe_bytes = _read_toml(recipe_path, "collection recipe")
+        _only_keys(recipe_raw, {"collection"}, f"recipe {recipe_path}")
+        label = f"recipe {recipe_path}: collection"
+        collection = _load_collection(
+            recipe_raw.get("collection"),
+            label,
+            defaults_capture,
+            recipe_path=recipe_path,
+        )
+        if collection.id in seen_collection_ids:
+            raise ConfigError(f"{label}.id: duplicate collection ID {collection.id!r}")
+        seen_collection_ids.add(collection.id)
+        recipe_input_bytes[recipe_path] = recipe_bytes
+        collections.append(collection)
+
+    if not collections:
+        raise ConfigError("configuration: expected at least one collection or recipe")
 
     return Config(
         path=config_path,
@@ -186,7 +212,23 @@ def load_config(path: str | Path) -> Config:
         project=project,
         defaults_capture=MappingProxyType(defaults_capture),
         collections=tuple(collections),
+        recipe_input_bytes=MappingProxyType(recipe_input_bytes),
     )
+
+
+def _read_toml(path: Path, kind: str) -> tuple[dict[str, Any], bytes]:
+    try:
+        input_bytes = path.read_bytes()
+        raw = tomllib.loads(input_bytes.decode("utf-8"))
+    except FileNotFoundError as exc:
+        raise ConfigError(f"{kind} does not exist: {path}") from exc
+    except OSError as exc:
+        raise ConfigError(f"cannot read {kind} {path}: {exc}") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"invalid TOML in {path}: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise ConfigError(f"{kind} is not valid UTF-8: {path}") from exc
+    return raw, input_bytes
 
 
 def _load_project(value: Mapping[str, Any], base: Path) -> ProjectConfig:
@@ -239,6 +281,8 @@ def _load_collection(
     value: Any,
     label: str,
     defaults_capture: Mapping[str, Any],
+    *,
+    recipe_path: Path | None,
 ) -> CollectionConfig:
     table = _table(value, label)
     _only_keys(
@@ -293,6 +337,7 @@ def _load_collection(
         sources=tuple(sources),
         capture=MappingProxyType(collection_capture),
         analysis=MappingProxyType(analysis),
+        recipe_path=recipe_path,
     )
 
 
