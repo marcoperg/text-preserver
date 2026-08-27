@@ -2,7 +2,7 @@
 
 **Preserve vulnerable digital text collections and the context that makes them intelligible.**
 
-> **Status: early implementation.** Configuration validation and the `doctor` command exist; capture and verification do not. Other command examples in this document describe the target interface unless explicitly marked as implemented.
+> **Status: early implementation.** Configuration validation, `doctor`, side-effect-free `capture --dry-run` planning, and a localhost Wget integration harness exist; capture execution and verification do not. Other command examples in this document describe the target interface unless explicitly marked as implemented.
 
 `text-preserver` is a preservation-first system for scholarly corpora, digital editions, historical text archives, specialist bibliographies, old academic websites, and other text-centered collections that may become unavailable or difficult to reconstruct.
 
@@ -808,7 +808,9 @@ Ciao can identify relationships and tensions without pretending to settle them a
 
 ## Planned command-line interface
 
-The CLI does not yet exist. The following commands define the intended interface.
+The CLI foundation, `doctor`, and `capture --dry-run` exist. The remaining commands define the intended interface.
+
+The initial Wget planner disables ambient proxies and redirects. GNU Wget's domain filter does not constrain redirect destinations, so redirect following cannot be enabled until every redirect hop can be checked against the source allowlist.
 
 ### Environment and configuration
 

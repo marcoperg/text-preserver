@@ -15,6 +15,7 @@ import tomllib
 
 SAFE_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$")
 HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+BYTE_SIZE_RE = re.compile(r"^([1-9][0-9]*)([KkMmGg]?)$")
 
 DEFAULT_CAPTURE_SETTINGS: dict[str, Any] = {
     "engine": "wget",
@@ -395,6 +396,14 @@ def _load_capture_settings(value: Any, label: str) -> dict[str, Any]:
 
     if "engine" in result and result["engine"] != "wget":
         raise ConfigError(f"{label}.engine: only 'wget' is currently supported")
+    for key in {"quota", "limit_rate"} & result.keys():
+        _byte_size(result[key], f"{label}.{key}")
+    if "warc_max_size" in result:
+        _byte_size(
+            result["warc_max_size"],
+            f"{label}.warc_max_size",
+            minimum=1024 * 1024,
+        )
     if "level" in result:
         level = result["level"]
         if level != "inf" and (
@@ -423,6 +432,8 @@ def _load_capture_settings(value: Any, label: str) -> dict[str, Any]:
 
 
 def _validate_capture_combination(settings: Mapping[str, Any], label: str) -> None:
+    if not settings["mirror"] and not settings["warc"]:
+        raise ConfigError(f"{label}: mirror and warc cannot both be false")
     if settings["warc_cdx"] and not settings["warc"]:
         raise ConfigError(f"{label}.warc_cdx: cannot be true when warc is false")
     if not settings["mirror"]:
@@ -445,6 +456,19 @@ def _safe_id(value: Any, label: str) -> str:
             f"{label}: expected 1-64 lowercase letters, digits, dots, underscores, or hyphens"
         )
     return identifier
+
+
+def _byte_size(value: str, label: str, *, minimum: int = 1) -> int:
+    match = BYTE_SIZE_RE.fullmatch(value)
+    if match is None:
+        raise ConfigError(
+            f"{label}: expected a positive byte quantity such as 500K, 100M, or 2G"
+        )
+    multipliers = {"": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
+    size = int(match.group(1)) * multipliers[match.group(2).lower()]
+    if size < minimum:
+        raise ConfigError(f"{label}: must be at least {minimum} bytes")
+    return size
 
 
 def _host_list(value: Any, label: str) -> list[str]:

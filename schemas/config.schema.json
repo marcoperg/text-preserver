@@ -58,7 +58,7 @@
         "mirror": { "type": "boolean" },
         "warc": { "type": "boolean" },
         "warc_cdx": { "type": "boolean" },
-        "warc_max_size": { "type": "string", "minLength": 1 },
+        "warc_max_size": { "$ref": "#/$defs/byteSize" },
         "robots": { "type": "boolean" },
         "wait": { "type": "number", "minimum": 0 },
         "random_wait": { "type": "boolean" },
@@ -67,8 +67,8 @@
         "retry_connrefused": { "type": "boolean" },
         "span_hosts": { "type": "boolean" },
         "no_parent": { "type": "boolean" },
-        "quota": { "type": "string", "minLength": 1 },
-        "limit_rate": { "type": "string", "minLength": 1 },
+        "quota": { "$ref": "#/$defs/byteSize" },
+        "limit_rate": { "$ref": "#/$defs/byteSize" },
         "accept": { "$ref": "#/$defs/stringList" },
         "reject": { "$ref": "#/$defs/stringList" },
         "accept_regex": { "type": "string", "minLength": 1 },
@@ -83,6 +83,10 @@
     "stringList": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
+    },
+    "byteSize": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*[KkMmGg]?$"
     },
     "source": {
       "type": "object",
