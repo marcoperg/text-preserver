@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
+import secrets
+import shutil
 import sys
 import tempfile
 from types import ModuleType
@@ -14,7 +18,7 @@ from typing import Any, Mapping
 
 from text_preserver.capture.plan import CAPTURE_ID_RE
 from text_preserver.config import CollectionConfig, Config
-from text_preserver.manifest import verify_capture
+from text_preserver.manifest import MANIFEST_NAME, verify_capture
 
 
 class AnalysisError(RuntimeError):
@@ -36,6 +40,30 @@ class AnalysisResult:
             "capture_directory": str(self.capture_directory),
             "report_path": str(self.report_path),
             "report": dict(self.report),
+        }
+
+
+@dataclass(frozen=True)
+class ReaderResult:
+    capture_directory: Path
+    output_directory: Path
+    index_path: Path
+    metadata_path: Path
+    metadata: Mapping[str, Any]
+    current_index_path: Path | None = None
+    current_reader_updated: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "capture_directory": str(self.capture_directory),
+            "output_directory": str(self.output_directory),
+            "index_path": str(self.index_path),
+            "metadata_path": str(self.metadata_path),
+            "current_index_path": (
+                str(self.current_index_path) if self.current_index_path is not None else None
+            ),
+            "current_reader_updated": self.current_reader_updated,
+            "metadata": dict(self.metadata),
         }
 
 
@@ -141,6 +169,209 @@ def analyze_preservation(
     return AnalysisResult(capture_directory, report_path, report)
 
 
+def build_static_reader(
+    config: Config,
+    collection_id: str,
+    capture_path: str | Path | None = None,
+) -> ReaderResult:
+    """Build a capture-scoped static reader without changing archive masters."""
+    collection, capture_directory, capture_id = _verified_collection_capture(
+        config,
+        collection_id,
+        capture_path,
+    )
+    adapter_value = collection.analysis.get("inventory_adapter")
+    if not isinstance(adapter_value, str):
+        raise AnalysisError(f"collection {collection.id} has no reader adapter")
+    adapter_path, adapter_source = _adapter_path(
+        config,
+        collection,
+        capture_directory,
+        adapter_value,
+        prefer_preserved=False,
+    )
+    adapter, adapter_bytes = _load_adapter(adapter_path)
+    render = getattr(adapter, "render_static_reader", None)
+    if not callable(render):
+        raise AnalysisError(f"inventory adapter does not export render_static_reader(): {adapter_path}")
+
+    try:
+        payload = render(
+            capture_directory,
+            expected_work_count=collection.analysis.get("expected_work_count", 0),
+        )
+    except Exception as exc:
+        raise AnalysisError(f"reader adapter failed {adapter_path}: {exc}") from exc
+    files, summary, warnings, status = _validate_reader_payload(payload, adapter_path)
+
+    verification_after = verify_capture(capture_directory)
+    if not verification_after.ok:
+        raise AnalysisError(
+            "capture changed during reader generation: "
+            + "; ".join(verification_after.errors)
+        )
+
+    metadata: dict[str, Any] = {
+        "schema_version": 1,
+        "status": status,
+        "collection_id": collection.id,
+        "capture_id": capture_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "capture_manifest_sha256": _sha256(capture_directory / MANIFEST_NAME),
+        "configuration_sha256": hashlib.sha256(config.input_bytes).hexdigest(),
+        "recipe_sha256": (
+            hashlib.sha256(config.recipe_input_bytes[collection.recipe_path]).hexdigest()
+            if collection.recipe_path is not None
+            else None
+        ),
+        "expected_work_count": collection.analysis.get("expected_work_count", 0),
+        "renderer": {
+            "path": str(adapter_path),
+            "source": adapter_source,
+            "sha256": hashlib.sha256(adapter_bytes).hexdigest(),
+        },
+        "summary": summary,
+        "warnings": warnings,
+    }
+    relative_parent = Path("collections") / collection.id / "captures" / capture_id
+    parent = _ensure_derived_directory(config.project.derived_root, relative_parent)
+    output_directory = parent / "reader"
+    try:
+        generation_directory = _write_derived_tree(output_directory, files, metadata)
+    except (OSError, TypeError, ValueError) as exc:
+        raise AnalysisError(f"cannot write static reader {output_directory}: {exc}") from exc
+    current_reader_updated = status in {"complete", "complete_with_warnings"}
+    if current_reader_updated:
+        current_index_path = _update_current_reader_pointer(
+            config.project.derived_root,
+            collection.id,
+            generation_directory,
+        )
+    else:
+        current_index_path = _existing_current_reader_index(
+            config.project.derived_root,
+            collection.id,
+        )
+    return ReaderResult(
+        capture_directory,
+        output_directory,
+        output_directory / "index.html",
+        output_directory / "metadata.json",
+        metadata,
+        current_index_path,
+        current_reader_updated,
+    )
+
+
+def _verified_collection_capture(
+    config: Config,
+    collection_id: str,
+    capture_path: str | Path | None,
+) -> tuple[CollectionConfig, Path, str]:
+    collection = _find_collection(config, collection_id)
+    if capture_path is not None:
+        requested_path = Path(capture_path)
+    else:
+        collection_root = config.project.archive_root / "collections" / collection.id
+        reader_source = collection.analysis.get("reader_source")
+        source_pointer = collection_root / f"LATEST-{reader_source}"
+        if isinstance(reader_source, str) and (
+            source_pointer.is_symlink() or source_pointer.exists()
+        ):
+            requested_path = _read_capture_pointer(collection_root, source_pointer.name)
+        else:
+            requested_path = collection_root
+    verification = verify_capture(requested_path)
+    if not verification.ok:
+        raise AnalysisError("capture fixity verification failed: " + "; ".join(verification.errors))
+    capture_directory = verification.capture_directory
+    capture_metadata = _read_json(capture_directory / "capture.json", "capture metadata")
+    if capture_metadata.get("collection_id") != collection.id:
+        raise AnalysisError(
+            f"capture belongs to collection {capture_metadata.get('collection_id')!r}, not {collection.id!r}"
+        )
+    capture_id = capture_metadata.get("capture_id")
+    if not isinstance(capture_id, str) or CAPTURE_ID_RE.fullmatch(capture_id) is None:
+        raise AnalysisError(f"capture metadata has an unsafe capture ID: {capture_id!r}")
+    if capture_id != capture_directory.name:
+        raise AnalysisError(
+            f"capture metadata ID {capture_id!r} does not match directory {capture_directory.name!r}"
+        )
+    return collection, capture_directory, capture_id
+
+
+def current_reader_index(config: Config, collection_id: str) -> Path:
+    """Return the safe stable index for a collection's current derived reader."""
+    collection = _find_collection(config, collection_id)
+    path = _existing_current_reader_index(config.project.derived_root, collection.id)
+    if path is None:
+        raise AnalysisError(f"collection {collection.id} has no current derived reader")
+    return path
+
+
+def _read_capture_pointer(collection_root: Path, name: str) -> Path:
+    pointer = collection_root / name
+    if pointer.is_symlink() or not pointer.is_file():
+        raise AnalysisError(f"capture pointer is unavailable: {pointer}")
+    try:
+        value = pointer.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        raise AnalysisError(f"cannot read capture pointer {pointer}: {exc}") from exc
+    relative = Path(value)
+    if not value or relative.is_absolute() or ".." in relative.parts:
+        raise AnalysisError(f"unsafe capture pointer: {pointer}")
+    target = (collection_root / relative).resolve()
+    if not target.is_relative_to(collection_root.resolve()):
+        raise AnalysisError(f"capture pointer escapes collection directory: {pointer}")
+    return target
+
+
+def _update_current_reader_pointer(
+    derived_root: Path,
+    collection_id: str,
+    reader_directory: Path,
+) -> Path:
+    collection_root = derived_root / "collections" / collection_id
+    captures_root = collection_root / "captures"
+    resolved_reader = reader_directory.resolve()
+    if not resolved_reader.is_relative_to(captures_root.resolve()):
+        raise AnalysisError(f"reader output escapes collection captures: {reader_directory}")
+    current = collection_root / "reader"
+    if current.is_symlink():
+        if not current.resolve().is_relative_to(captures_root.resolve()):
+            raise AnalysisError(f"current reader pointer escapes collection captures: {current}")
+    elif current.exists():
+        raise AnalysisError(f"current reader pointer is not a symlink: {current}")
+    temporary = collection_root / f".reader-current-{secrets.token_hex(8)}"
+    try:
+        relative = os.path.relpath(resolved_reader, collection_root)
+        os.symlink(relative, temporary, target_is_directory=True)
+        os.replace(temporary, current)
+        directory_descriptor = os.open(collection_root, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return current / "index.html"
+
+
+def _existing_current_reader_index(derived_root: Path, collection_id: str) -> Path | None:
+    collection_root = derived_root / "collections" / collection_id
+    captures_root = collection_root / "captures"
+    current = collection_root / "reader"
+    if not current.is_symlink():
+        return None
+    resolved = current.resolve()
+    if not resolved.is_relative_to(captures_root.resolve()):
+        raise AnalysisError(f"current reader pointer escapes collection captures: {current}")
+    index = current / "index.html"
+    if index.is_symlink() or not index.is_file():
+        raise AnalysisError(f"current reader index is unavailable: {index}")
+    return index
+
+
 def _find_collection(config: Config, collection_id: str) -> CollectionConfig:
     for collection in config.collections:
         if collection.id == collection_id:
@@ -153,10 +384,12 @@ def _adapter_path(
     collection: CollectionConfig,
     capture_directory: Path,
     value: str,
+    *,
+    prefer_preserved: bool = True,
 ) -> tuple[Path, str]:
     path = Path(value).expanduser()
     base = collection.recipe_path.parent if collection.recipe_path else config.path.parent
-    if not path.is_absolute():
+    if not path.is_absolute() and prefer_preserved:
         if ".." in path.parts:
             raise AnalysisError(f"inventory adapter has an unsafe relative path: {value}")
         preserved_root = capture_directory / "metadata" / "recipe-assets"
@@ -176,6 +409,46 @@ def _adapter_path(
     if resolved.is_symlink() or not resolved.is_file():
         raise AnalysisError(f"inventory adapter is not a regular file: {resolved}")
     return resolved, "current_recipe"
+
+
+def _validate_reader_payload(
+    payload: Any,
+    adapter_path: Path,
+) -> tuple[dict[str, bytes], dict[str, Any], list[str], str]:
+    if not isinstance(payload, dict):
+        raise AnalysisError(f"reader adapter returned an invalid payload: {adapter_path}")
+    raw_files = payload.get("files")
+    summary = payload.get("summary", {})
+    warnings = payload.get("warnings", [])
+    status = payload.get("status")
+    if not isinstance(raw_files, Mapping) or not isinstance(summary, dict):
+        raise AnalysisError(f"reader adapter returned invalid files or summary: {adapter_path}")
+    if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
+        raise AnalysisError(f"reader adapter returned invalid warnings: {adapter_path}")
+    if status not in {"complete", "complete_with_warnings", "incomplete"}:
+        raise AnalysisError(f"reader adapter returned an invalid status: {adapter_path}")
+    if len(raw_files) > 2_000:
+        raise AnalysisError("reader adapter returned more than 2,000 files")
+    files: dict[str, bytes] = {}
+    total_size = 0
+    for name, value in raw_files.items():
+        if not isinstance(name, str) or "\\" in name:
+            raise AnalysisError(f"reader adapter returned an unsafe path: {name!r}")
+        path = PurePosixPath(name)
+        if not path.parts or path.is_absolute() or ".." in path.parts:
+            raise AnalysisError(f"reader adapter returned an unsafe path: {name!r}")
+        if name == "metadata.json" or name.endswith("/"):
+            raise AnalysisError(f"reader adapter returned a reserved path: {name!r}")
+        if not isinstance(value, str):
+            raise AnalysisError(f"reader adapter returned non-text content for {name!r}")
+        encoded = value.encode("utf-8")
+        total_size += len(encoded)
+        if total_size > 128 * 1024 * 1024:
+            raise AnalysisError("reader adapter output exceeds 128 MiB")
+        files[name] = encoded
+    if "index.html" not in files:
+        raise AnalysisError("reader adapter did not return index.html")
+    return files, summary, warnings, status
 
 
 def _load_adapter(path: Path) -> tuple[ModuleType, bytes]:
@@ -223,6 +496,136 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _write_derived_tree(
+    target: Path,
+    files: Mapping[str, bytes],
+    metadata: Mapping[str, Any],
+) -> Path:
+    generations = target.parent / "reader-generations"
+    if generations.is_symlink() or (generations.exists() and not generations.is_dir()):
+        raise AnalysisError(f"reader generations path is not a regular directory: {generations}")
+    generations.mkdir(exist_ok=True)
+    if target.is_symlink():
+        if not target.resolve().is_relative_to(generations.resolve()):
+            raise AnalysisError(f"derived reader pointer escapes its generations: {target}")
+    elif target.exists() and not target.is_dir():
+        raise AnalysisError(f"derived reader target is not a regular directory: {target}")
+
+    staging = Path(tempfile.mkdtemp(dir=generations, prefix=".build-"))
+    link = target.parent / f".reader-link-{secrets.token_hex(8)}"
+    legacy: Path | None = None
+    try:
+        for name, content in files.items():
+            destination = staging.joinpath(*PurePosixPath(name).parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(content)
+        (staging / "metadata.json").write_text(
+            json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        generation_id = hashlib.sha256(
+            (metadata["created_at"] + metadata["renderer"]["sha256"]).encode("utf-8")
+        ).hexdigest()[:20]
+        generation = generations / generation_id
+        _fsync_tree(staging)
+        os.replace(staging, generation)
+        _make_tree_read_only(generation)
+        _fsync_tree(generation)
+        _fsync_directory(generations)
+
+        if target.exists() and not target.is_symlink():
+            legacy = generations / f"legacy-{secrets.token_hex(8)}"
+            os.replace(target, legacy)
+        try:
+            relative_generation = os.path.relpath(generation, target.parent)
+            os.symlink(relative_generation, link, target_is_directory=True)
+            os.replace(link, target)
+            _fsync_directory(target.parent)
+        except Exception:
+            if legacy is not None and not target.exists():
+                os.replace(legacy, target)
+                legacy = None
+            raise
+        return generation
+    finally:
+        link.unlink(missing_ok=True)
+        if staging.exists():
+            _make_tree_writable(staging)
+            shutil.rmtree(staging)
+
+
+def _make_tree_read_only(root: Path) -> None:
+    for path in root.rglob("*"):
+        path.chmod(0o555 if path.is_dir() else 0o444)
+    root.chmod(0o555)
+
+
+def _make_tree_writable(root: Path) -> None:
+    root.chmod(0o755)
+    for path in root.rglob("*"):
+        if path.is_dir():
+            path.chmod(0o755)
+
+
+def _fsync_tree(root: Path) -> None:
+    directories = [root]
+    for path in root.rglob("*"):
+        if path.is_dir():
+            directories.append(path)
+            continue
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    for directory in reversed(directories):
+        _fsync_directory(directory)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _ensure_output_parents(root: Path, parent: Path) -> None:
+    current = root
+    for part in parent.relative_to(root).parts:
+        current = current / part
+        if current.is_symlink():
+            raise AnalysisError(f"derived reader path must not contain symlinks: {current}")
+        current.mkdir(exist_ok=True)
+        if not current.is_dir():
+            raise AnalysisError(f"derived reader component is not a directory: {current}")
+
+
+def _atomic_write_bytes(path: Path, content: bytes) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _ensure_derived_directory(root: Path, relative: Path) -> Path:

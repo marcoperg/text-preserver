@@ -23,7 +23,7 @@ from typing import Any, Iterator, Mapping, Sequence
 
 from text_preserver import __version__
 from text_preserver.capture.engines.wget import WgetCommand
-from text_preserver.capture.plan import CapturePlan, plan_capture
+from text_preserver.capture.plan import CAPTURE_ID_RE, CapturePlan, plan_capture
 from text_preserver.config import CollectionConfig, Config, SourceConfig
 from text_preserver.manifest import ManifestError, finalize_capture, verify_capture
 
@@ -43,6 +43,7 @@ class CaptureResult:
     capture_directory: Path
     metadata: Mapping[str, Any]
     latest_updated: bool = False
+    source_latest_updated: tuple[str, ...] = ()
 
     @property
     def status(self) -> str:
@@ -52,6 +53,7 @@ class CaptureResult:
         return {
             "capture_directory": str(self.capture_directory),
             "latest_updated": self.latest_updated,
+            "source_latest_updated": list(self.source_latest_updated),
             **dict(self.metadata),
         }
 
@@ -254,13 +256,22 @@ def _execute_plan(
         raise CaptureExecutionError(
             "capture failed immediate fixity verification: " + "; ".join(verification.errors)
         )
-    latest_updated = eligible_for_latest and capture_metadata["status"] == "complete"
-    if latest_updated:
-        _update_latest(plan.capture_directory)
+    latest_updated = (
+        eligible_for_latest
+        and capture_metadata["status"] == "complete"
+        and _update_latest(plan.capture_directory)
+    )
+    source_latest_updated = tuple(
+        str(result["source_id"])
+        for result in results
+        if result.get("status") in {"complete", "complete_with_warnings"}
+        and _update_latest(plan.capture_directory, source_id=str(result["source_id"]))
+    )
     return CaptureResult(
         capture_directory=plan.capture_directory,
         metadata=MappingProxyType(capture_metadata),
         latest_updated=latest_updated,
+        source_latest_updated=source_latest_updated,
     )
 
 
@@ -513,13 +524,109 @@ def _write_text(path: Path, value: str) -> None:
     path.write_text(value, encoding="utf-8")
 
 
-def _update_latest(capture_directory: Path) -> None:
+def _update_latest(capture_directory: Path, *, source_id: str | None = None) -> bool:
     collection_root = capture_directory.parent.parent
     relative = capture_directory.relative_to(collection_root).as_posix()
-    pointer = collection_root / "LATEST"
-    temporary = collection_root / ".LATEST.tmp"
-    temporary.write_text(relative + "\n", encoding="utf-8")
-    os.replace(temporary, pointer)
+    name = "LATEST" if source_id is None else f"LATEST-{source_id}"
+    pointer = collection_root / name
+    if pointer.is_symlink() or (pointer.exists() and not pointer.is_file()):
+        raise CaptureExecutionError(f"unsafe capture pointer: {pointer}")
+    if pointer.is_file():
+        try:
+            current_value = pointer.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError) as exc:
+            raise CaptureExecutionError(
+                f"cannot read capture pointer {pointer}: {exc}"
+            ) from exc
+        current_relative = Path(current_value)
+        if (
+            len(current_relative.parts) != 2
+            or current_relative.parts[0] != "captures"
+            or CAPTURE_ID_RE.fullmatch(current_relative.parts[1]) is None
+        ):
+            raise CaptureExecutionError(f"unsafe capture pointer content: {pointer}")
+        current_capture = collection_root / current_relative
+        current_timestamp = current_capture.name.split("-", 1)[0]
+        capture_timestamp = capture_directory.name.split("-", 1)[0]
+        if (
+            current_timestamp > capture_timestamp
+            and _valid_pointer_target(current_capture, source_id=source_id)
+        ):
+            return False
+    temporary = collection_root / f".{name}-{secrets.token_hex(8)}.tmp"
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(temporary, flags, 0o600)
+        try:
+            os.write(descriptor, (relative + "\n").encode("utf-8"))
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.replace(temporary, pointer)
+        directory_descriptor = os.open(collection_root, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return True
+
+
+def _valid_pointer_target(capture_directory: Path, *, source_id: str | None) -> bool:
+    if capture_directory.is_symlink() or not capture_directory.is_dir():
+        return False
+    verification = verify_capture(capture_directory)
+    if not verification.ok:
+        return False
+    try:
+        capture = json.loads((capture_directory / "capture.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    if (
+        not isinstance(capture, dict)
+        or capture.get("capture_id") != capture_directory.name
+        or capture.get("collection_id") != capture_directory.parent.parent.name
+    ):
+        return False
+    sources = capture.get("sources")
+    if not isinstance(sources, list):
+        return False
+    if source_id is not None:
+        return any(
+            isinstance(result, dict)
+            and result.get("source_id") == source_id
+            and result.get("status") in {"complete", "complete_with_warnings"}
+            for result in sources
+        )
+    if capture.get("status") != "complete":
+        return False
+    try:
+        resolved = json.loads(
+            (capture_directory / "metadata/resolved-collection.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    configured_sources = resolved.get("sources") if isinstance(resolved, dict) else None
+    selected_sources = capture.get("selected_sources")
+    if not isinstance(configured_sources, list) or not isinstance(selected_sources, list):
+        return False
+    configured_ids = [
+        item.get("id") for item in configured_sources if isinstance(item, dict)
+    ]
+    if (
+        len(configured_ids) != len(configured_sources)
+        or not all(isinstance(value, str) for value in configured_ids)
+        or not all(isinstance(value, str) for value in selected_sources)
+    ):
+        return False
+    return set(configured_ids) == set(selected_sources) and len(configured_ids) == len(
+        selected_sources
+    )
 
 
 def _generate_capture_id() -> str:

@@ -125,6 +125,16 @@ allowed_hosts = ["example.org"]
         with self.assertRaisesRegex(ConfigError, "unknown key 'archive_rooot'"):
             load_config(self.write_config(invalid))
 
+    def test_rejects_unknown_reader_source(self) -> None:
+        invalid = VALID_CONFIG.replace(
+            "[[collections.sources]]",
+            '[collections.analysis]\nreader_source = "missing"\n\n[[collections.sources]]',
+            1,
+        )
+
+        with self.assertRaisesRegex(ConfigError, "unknown source ID 'missing'"):
+            load_config(self.write_config(invalid))
+
     def test_rejects_nested_data_roots(self) -> None:
         invalid = VALID_CONFIG.replace(
             'derived_root = "./data/derived"',

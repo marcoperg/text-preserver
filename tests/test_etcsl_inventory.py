@@ -104,6 +104,99 @@ class EtcslInventoryTests(unittest.TestCase):
             with self.assertRaisesRegex(inventory.InventoryError, "does not match directory"):
                 inventory._analyze_zip(path, 1)
 
+    def test_reader_preserves_unknown_entities_and_escapes_markup(self) -> None:
+        root, unresolved = inventory._parse_reader_xml(
+            """
+<TEI.2 id="t.1.1.1"><teiHeader><fileDesc><titleStmt>
+<title>&h;&lt;script&gt;alert(1)&lt;/script&gt; -- an English prose translation</title>
+</titleStmt></fileDesc></teiHeader><text><body><p n="1">Safe &h; text.</p></body></text></TEI.2>
+""".strip(),
+            "fixture.xml",
+        )
+
+        title = inventory._reader_title(root, "1.1.1")
+        page = inventory._render_work_page(
+            "1.1.1",
+            title,
+            {"translation": root, "translation_path": "fixture.xml"},
+            "20260827T120000Z-a1b2c3",
+            "0" * 64,
+            None,
+            None,
+        )
+
+        self.assertEqual(unresolved, {"h"})
+        self.assertIn("&amp;h;&lt;script&gt;alert(1)&lt;/script&gt;", page)
+        self.assertNotIn("<script>", page)
+
+    def test_reader_handles_translation_without_transliteration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory) / "20260827T120000Z-a1b2c3"
+            mirror = capture / "sources/ota-dataset/mirror"
+            mirror.mkdir(parents=True)
+            with zipfile.ZipFile(mirror / "etcsl.zip", "w") as archive:
+                archive.writestr("etcsl/tei/tei2.dtd", "")
+                archive.writestr(
+                    "etcsl/translations/t.1.1.1.xml",
+                    """
+<TEI.2 id="t.1.1.1"><teiHeader><fileDesc><titleStmt>
+<title>Example -- an English prose translation</title>
+</titleStmt></fileDesc></teiHeader><text><body><p n="1">Text.</p></body></text></TEI.2>
+""".strip(),
+                )
+
+            payload = inventory.render_static_reader(capture, expected_work_count=1)
+            page = payload["files"]["works/1.1.1.html"]
+
+            self.assertEqual(payload["status"], "incomplete")
+            self.assertIn("translation", payload["files"]["index.html"])
+            self.assertNotIn(">transliteration</span>", payload["files"]["index.html"])
+            self.assertIn("No transliteration is present", page)
+
+    def test_reader_is_incomplete_for_mismatched_root_id(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory) / "20260827T120000Z-a1b2c3"
+            mirror = capture / "sources/ota-dataset/mirror"
+            mirror.mkdir(parents=True)
+            with zipfile.ZipFile(mirror / "etcsl.zip", "w") as archive:
+                archive.writestr("etcsl/tei/tei2.dtd", "")
+                archive.writestr(
+                    "etcsl/transliterations/c.1.1.1.xml",
+                    '<TEI.2 id="c.9.9.9"><text><body><l n="1">Text.</l></body></text></TEI.2>',
+                )
+                archive.writestr(
+                    "etcsl/translations/t.1.1.1.xml",
+                    '<TEI.2 id="t.1.1.1"><text><body><p n="1">Text.</p></body></text></TEI.2>',
+                )
+
+            payload = inventory.render_static_reader(capture, expected_work_count=1)
+
+            self.assertEqual(payload["status"], "incomplete")
+            self.assertTrue(
+                any("root name or ID" in warning for warning in payload["warnings"])
+            )
+
+    def test_reader_requires_translation_for_the_correct_composition(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory) / "20260827T120000Z-a1b2c3"
+            mirror = capture / "sources/ota-dataset/mirror"
+            mirror.mkdir(parents=True)
+            with zipfile.ZipFile(mirror / "etcsl.zip", "w") as archive:
+                archive.writestr("etcsl/tei/tei2.dtd", "")
+                for identifier in ("0.1.1", "1.1.1"):
+                    archive.writestr(
+                        f"etcsl/transliterations/c.{identifier}.xml",
+                        f'<TEI.2 id="c.{identifier}"><text><body><l n="1">Text.</l></body></text></TEI.2>',
+                    )
+                archive.writestr(
+                    "etcsl/translations/t.0.1.1.xml",
+                    '<TEI.2 id="t.0.1.1"><text><body><p n="1">Text.</p></body></text></TEI.2>',
+                )
+
+            payload = inventory.render_static_reader(capture, expected_work_count=2)
+
+            self.assertEqual(payload["status"], "incomplete")
+
 
 if __name__ == "__main__":
     unittest.main()

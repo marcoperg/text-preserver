@@ -7,9 +7,15 @@ from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
-from text_preserver.analysis import AnalysisError, analyze_preservation
+from text_preserver.analysis import (
+    AnalysisError,
+    analyze_preservation,
+    build_static_reader,
+    current_reader_index,
+)
 from text_preserver.cli import main
 from text_preserver.config import load_config
 from text_preserver.manifest import finalize_capture, verify_capture
@@ -35,6 +41,7 @@ title = "ETCSL Fixture"
 
 [collection.analysis]
 inventory_adapter = "inventory.py"
+reader_source = "ota-dataset"
 expected_work_count = 4
 required_representation_kinds = ["transliteration"]
 
@@ -208,6 +215,235 @@ def analyze_capture(capture_directory, **kwargs):
             result.report["mapping"]["missing_deposit_translations"],
             ["2.4.1.a"],
         )
+
+    def test_builds_static_reader_without_changing_capture(self) -> None:
+        self.create_capture()
+
+        result = build_static_reader(
+            load_config(self.config_path),
+            "etcsl-fixture",
+            self.capture,
+        )
+
+        self.assertTrue(result.index_path.is_file())
+        self.assertTrue(result.output_directory.is_symlink())
+        self.assertTrue(result.current_reader_updated)
+        self.assertIsNotNone(result.current_index_path)
+        current_reader = self.root / "data/derived/collections/etcsl-fixture/reader"
+        self.assertTrue(current_reader.is_symlink())
+        self.assertIn("reader-generations", current_reader.readlink().parts)
+        self.assertEqual(result.index_path.stat().st_mode & 0o222, 0)
+        self.assertEqual(
+            current_reader_index(load_config(self.config_path), "etcsl-fixture").resolve(),
+            result.index_path.resolve(),
+        )
+        self.assertTrue(result.metadata_path.is_file())
+        self.assertEqual(result.metadata["summary"]["work_count"], 4)
+        self.assertEqual(result.metadata["renderer"]["source"], "current_recipe")
+        self.assertTrue((result.output_directory / "works/1.8.1.5.1.html").is_file())
+        self.assertIn("Composition 1.8.1.5.1", result.index_path.read_text(encoding="utf-8"))
+        self.assertTrue(verify_capture(self.capture).ok)
+
+        first_generation = result.output_directory.resolve()
+        rebuilt = build_static_reader(
+            load_config(self.config_path),
+            "etcsl-fixture",
+            self.capture,
+        )
+        self.assertNotEqual(rebuilt.output_directory.resolve(), first_generation)
+        self.assertTrue(rebuilt.index_path.is_file())
+        self.assertEqual(
+            current_reader_index(load_config(self.config_path), "etcsl-fixture").resolve(),
+            rebuilt.index_path.resolve(),
+        )
+
+    def test_reader_defaults_to_configured_source_pointer(self) -> None:
+        self.create_capture()
+        collection_root = self.capture.parent.parent
+        (collection_root / "LATEST-ota-dataset").write_text(
+            f"captures/{self.capture_id}\n",
+            encoding="utf-8",
+        )
+
+        result = build_static_reader(load_config(self.config_path), "etcsl-fixture")
+
+        self.assertEqual(result.capture_directory, self.capture.resolve())
+        self.assertTrue(result.current_reader_updated)
+
+    def test_reader_rejects_dangling_configured_source_pointer(self) -> None:
+        self.create_capture()
+        collection_root = self.capture.parent.parent
+        (collection_root / "LATEST").write_text(
+            f"captures/{self.capture_id}\n",
+            encoding="utf-8",
+        )
+        (collection_root / "LATEST-ota-dataset").symlink_to(
+            "captures/20260827T000000Z-dead00"
+        )
+
+        with self.assertRaisesRegex(AnalysisError, "capture pointer is unavailable"):
+            build_static_reader(load_config(self.config_path), "etcsl-fixture")
+
+    def test_reader_rejects_unsafe_adapter_output_path(self) -> None:
+        self.create_capture()
+        (self.root / "recipe/inventory.py").write_text(
+            """
+def render_static_reader(capture_directory, **kwargs):
+    return {"status": "complete", "files": {"index.html": "ok", "../escape": "bad"}}
+""".strip(),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(AnalysisError, "unsafe path"):
+            build_static_reader(
+                load_config(self.config_path),
+                "etcsl-fixture",
+                self.capture,
+            )
+
+        self.assertFalse((self.root / "data/derived/escape").exists())
+
+    def test_reader_detects_adapter_mutation_of_capture(self) -> None:
+        self.create_capture()
+        (self.root / "recipe/inventory.py").write_text(
+            """
+def render_static_reader(capture_directory, **kwargs):
+    (capture_directory / "capture.json").write_text("{}", encoding="utf-8")
+    return {"status": "complete", "files": {"index.html": "ok"}}
+""".strip(),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(AnalysisError, "capture changed during reader generation"):
+            build_static_reader(
+                load_config(self.config_path),
+                "etcsl-fixture",
+                self.capture,
+            )
+
+    def test_partial_reader_is_incomplete(self) -> None:
+        self.create_capture(omit_translation=True)
+
+        result = build_static_reader(
+            load_config(self.config_path),
+            "etcsl-fixture",
+            self.capture,
+        )
+
+        self.assertEqual(result.metadata["status"], "incomplete")
+        self.assertFalse(result.current_reader_updated)
+        self.assertIsNone(result.current_index_path)
+
+    def test_incomplete_reader_does_not_replace_current_reader(self) -> None:
+        self.create_capture()
+        config = load_config(self.config_path)
+        complete = build_static_reader(config, "etcsl-fixture", self.capture)
+        previous_index = complete.index_path.resolve()
+        (self.root / "recipe/inventory.py").write_text(
+            """
+def render_static_reader(capture_directory, **kwargs):
+    return {
+        "status": "incomplete",
+        "files": {"index.html": "incomplete"},
+        "summary": {},
+        "warnings": [],
+    }
+""".strip(),
+            encoding="utf-8",
+        )
+
+        incomplete = build_static_reader(config, "etcsl-fixture", self.capture)
+
+        self.assertFalse(incomplete.current_reader_updated)
+        self.assertEqual(
+            current_reader_index(config, "etcsl-fixture").resolve(),
+            previous_index,
+        )
+
+    def test_reader_rejects_current_pointer_outside_collection_captures(self) -> None:
+        self.create_capture()
+        collection_root = self.root / "data/derived/collections/etcsl-fixture"
+        outside = self.root / "outside-reader"
+        collection_root.mkdir(parents=True)
+        outside.mkdir()
+        (collection_root / "reader").symlink_to(outside, target_is_directory=True)
+
+        with self.assertRaisesRegex(AnalysisError, "escapes collection captures"):
+            build_static_reader(
+                load_config(self.config_path),
+                "etcsl-fixture",
+                self.capture,
+            )
+
+    def test_reader_cli_emits_json(self) -> None:
+        self.create_capture()
+        output = StringIO()
+
+        with redirect_stdout(output):
+            exit_code = main(
+                [
+                    "derive",
+                    "reader",
+                    "etcsl-fixture",
+                    str(self.capture),
+                    "-c",
+                    str(self.config_path),
+                    "--json",
+                ]
+            )
+
+        value = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(value["metadata"]["summary"]["work_count"], 4)
+        self.assertTrue(Path(value["index_path"]).is_file())
+        self.assertTrue(value["current_reader_updated"])
+
+    def test_open_reader_cli_prints_stable_index(self) -> None:
+        self.create_capture()
+        build_static_reader(load_config(self.config_path), "etcsl-fixture", self.capture)
+        output = StringIO()
+
+        with redirect_stdout(output):
+            exit_code = main(
+                [
+                    "open",
+                    "reader",
+                    "etcsl-fixture",
+                    "-c",
+                    str(self.config_path),
+                    "--print-only",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            Path(output.getvalue().strip()).resolve(),
+            (
+                self.root / "data/derived/collections/etcsl-fixture/reader/index.html"
+            ).resolve(),
+        )
+
+    @patch("text_preserver.cli.webbrowser.open", return_value=True)
+    def test_open_reader_cli_json_still_launches_browser(self, mock_open: object) -> None:
+        self.create_capture()
+        build_static_reader(load_config(self.config_path), "etcsl-fixture", self.capture)
+        output = StringIO()
+
+        with redirect_stdout(output):
+            exit_code = main(
+                [
+                    "open",
+                    "reader",
+                    "etcsl-fixture",
+                    "-c",
+                    str(self.config_path),
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output.getvalue())["collection_id"], "etcsl-fixture")
+        self.assertEqual(mock_open.call_count, 1)  # type: ignore[attr-defined]
 
     def test_cli_emits_json_and_uses_nonzero_for_incomplete_report(self) -> None:
         self.create_capture(omit_translation=True)

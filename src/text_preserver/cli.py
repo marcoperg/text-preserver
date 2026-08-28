@@ -7,9 +7,15 @@ import json
 from pathlib import Path
 import sys
 from typing import Mapping, Sequence
+import webbrowser
 
 from text_preserver import __version__
-from text_preserver.analysis import AnalysisError, analyze_preservation
+from text_preserver.analysis import (
+    AnalysisError,
+    analyze_preservation,
+    build_static_reader,
+    current_reader_index,
+)
 from text_preserver.capture import (
     CaptureExecutionError,
     CapturePlanError,
@@ -108,6 +114,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_config_argument(preservation)
     preservation.add_argument("--json", action="store_true", help="emit machine-readable report")
+
+    derive = subparsers.add_parser("derive", help="build access copies from preserved content")
+    derive_commands = derive.add_subparsers(dest="derive_command", required=True)
+    reader = derive_commands.add_parser("reader", help="build a collection-specific static reader")
+    reader.add_argument("collection_id", help="configured collection ID")
+    reader.add_argument(
+        "capture_path",
+        nargs="?",
+        type=Path,
+        help="capture directory; defaults to the collection LATEST pointer",
+    )
+    _add_config_argument(reader)
+    reader.add_argument("--json", action="store_true", help="emit machine-readable result")
+
+    open_command = subparsers.add_parser("open", help="open a derived access copy")
+    open_commands = open_command.add_subparsers(dest="open_command", required=True)
+    open_reader = open_commands.add_parser("reader", help="open the current static reader")
+    open_reader.add_argument("collection_id", help="configured collection ID")
+    _add_config_argument(open_reader)
+    open_reader.add_argument(
+        "--print-only",
+        action="store_true",
+        help="print the index path without launching a browser",
+    )
+    open_reader.add_argument("--json", action="store_true", help="emit the index path as JSON")
     return parser
 
 
@@ -234,6 +265,45 @@ def main(argv: Sequence[str] | None = None) -> int:
             for warning in result.report.get("warnings", []):
                 print(f"  warning: {warning}")
         return 0 if result.status in {"complete", "complete_with_warnings"} else 1
+    if args.command == "derive" and args.derive_command == "reader":
+        try:
+            config = load_config(args.config)
+            result = build_static_reader(
+                config,
+                args.collection_id,
+                args.capture_path,
+            )
+        except (ConfigError, AnalysisError) as exc:
+            print(f"reader error: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(result.to_dict(), indent=2))
+        else:
+            print(f"Capture: {result.capture_directory}")
+            print(f"Reader: {result.index_path}")
+            if result.current_index_path is not None:
+                print(f"Current reader: {result.current_index_path}")
+            print(f"Status: {result.metadata['status']}")
+            for warning in result.metadata.get("warnings", []):
+                print(f"  warning: {warning}")
+        return 0 if result.metadata["status"] in {"complete", "complete_with_warnings"} else 1
+    if args.command == "open" and args.open_command == "reader":
+        try:
+            config = load_config(args.config)
+            index_path = current_reader_index(config, args.collection_id)
+        except (ConfigError, AnalysisError) as exc:
+            print(f"open error: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps({"collection_id": args.collection_id, "index_path": str(index_path)}))
+        else:
+            print(index_path)
+        if args.print_only:
+            return 0
+        if not webbrowser.open(index_path.resolve().as_uri()):
+            print("open error: browser launch was not accepted", file=sys.stderr)
+            return 2
+        return 0
     raise AssertionError(f"unhandled command: {args.command}")
 
 

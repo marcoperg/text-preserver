@@ -40,6 +40,19 @@ text-preserver analyze preservation etcsl /path/to/capture -c collections.toml
 
 The canonical ZIP contains 394 transliteration XML files, 381 translation XML files, and 27 TEI support files. All 775 text XML shells parse when their named entities are safely stubbed, and their root IDs match their filenames. None of the text XML files has a `DOCTYPE`, so all 82 named entities used by those documents are unbound even where similarly named declarations exist elsewhere in the deposit. The reachable `tei2.dtd` support graph also omits `etcsl-extensions.ent`, `etcsl-extensions.dtd`, and conditional TEI modules. The report therefore distinguishes complete work/representation mapping from incomplete XML dependencies.
 
+## Static reader
+
+Generate a local access site from the newest verified canonical-deposit capture:
+
+```bash
+text-preserver derive reader etcsl -c collections.toml
+text-preserver open reader etcsl -c collections.toml
+```
+
+The recipe's `reader_source = "ota-dataset"` setting resolves the capture through `LATEST-ota-dataset`; an explicit capture path remains supported. The command writes `reader/index.html`, 394 composition pages, and `metadata.json` under the capture's directory in `derived/`, then atomically updates the collection-level `reader` symlink after a usable build. Pages contain responsive transliteration and translation columns, manuscript sections, line or paragraph labels, notes, gaps, and editorial milestones. They contain no JavaScript or external assets and can be opened in EWW or a normal browser. Use `open reader --print-only` to print the stable path without launching a browser.
+
+This first reader is not a replica of the historical ETCSL website. It omits bibliography linking and advanced stand-off annotations. Standard character entities are decoded, while 57 ETCSL-specific entities without trustworthy preserved definitions remain visible as tokens such as `&d;` and `&ki;`. The output records capture, manifest, configuration, recipe, renderer, and canonical archive hashes.
+
 ## Rights
 
 This public recipe records URLs and technical observations only. It does not grant rights to redistribute captured site or corpus content. Captures and private operator configuration remain outside Git.

@@ -166,6 +166,12 @@ allowed_hosts = ["127.0.0.1"]
         self.assertTrue(verification.ok, verification.errors)
         latest = capture.capture_directory.parent.parent / "LATEST"
         self.assertEqual(latest.read_text(encoding="utf-8").strip(), "captures/20260827T120000Z-a1b2c3")
+        source_latest = capture.capture_directory.parent.parent / "LATEST-web"
+        self.assertEqual(
+            source_latest.read_text(encoding="utf-8").strip(),
+            "captures/20260827T120000Z-a1b2c3",
+        )
+        self.assertEqual(capture.source_latest_updated, ("web",))
         self.assertTrue(verify_capture(latest.parent).ok)
 
     def test_source_filtered_capture_does_not_update_latest(self) -> None:
@@ -181,6 +187,11 @@ allowed_hosts = ["127.0.0.1"]
         self.assertEqual(capture.status, "complete")
         self.assertFalse(capture.latest_updated)
         self.assertFalse((capture.capture_directory.parent.parent / "LATEST").exists())
+        source_latest = capture.capture_directory.parent.parent / "LATEST-web"
+        self.assertEqual(
+            source_latest.read_text(encoding="utf-8").strip(),
+            "captures/20260827T120000Z-b2c3d4",
+        )
 
     def test_plan_does_not_follow_redirects(self) -> None:
         result, _source_root = self.execute_plan("/redirect")

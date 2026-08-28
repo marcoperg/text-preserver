@@ -2,7 +2,7 @@
 
 **Preserve vulnerable digital text collections and the context that makes them intelligible.**
 
-> **Status: early implementation.** Configuration validation, installable public recipes, `doctor`, `collections list/show`, guarded Wget capture, fixity verification, conservative latest-capture pointers, ETCSL catalogue/deposit completeness analysis, and a localhost integration harness exist. Other command examples describe the target interface unless explicitly marked as implemented.
+> **Status: early implementation.** Configuration validation, installable public recipes, `doctor`, `collections list/show`, guarded Wget capture, fixity verification, conservative latest-capture pointers, ETCSL completeness analysis, a derived static reader, and a localhost integration harness exist. Other command examples describe the target interface unless explicitly marked as implemented.
 
 `text-preserver` is a preservation-first system for scholarly corpora, digital editions, historical text archives, specialist bibliographies, old academic websites, and other text-centered collections that may become unavailable or difficult to reconstruct.
 
@@ -573,6 +573,14 @@ creation timestamp
 
 Deleting `derived/` must not damage the archive.
 
+The implemented first access derivative is built with:
+
+```bash
+text-preserver derive reader COLLECTION_ID /path/to/capture
+```
+
+The generic builder verifies capture fixity before and after rendering, executes only the current installed recipe code, constrains output paths and size, builds an immutable generation, atomically switches the capture-scoped `reader` pointer, and records capture, configuration, recipe, and renderer hashes. A usable build also atomically switches `derived/collections/ID/reader` directly to that immutable generation; incomplete builds cannot replace it. `text-preserver open reader COLLECTION_ID` opens this stable access path. The ETCSL renderer produces an inert local catalogue plus one page per composition under `derived/collections/ID/captures/CAPTURE/reader/`.
+
 ---
 
 ## Unified reader
@@ -968,6 +976,7 @@ quota = "500M"
 inventory_adapter = "collections/example-corpus/inventory.py"
 normalizer = "collections/example-corpus/normalize.py"
 ciao_rules = "collections/example-corpus/rules/preservation.pl"
+reader_source = "canonical-dataset"
 
 expected_work_count = 100
 required_representation_kinds = ["source", "metadata"]
@@ -1002,7 +1011,8 @@ data/
 │       └── etcsl/
 │           ├── collection.json
 │           ├── LATEST
-│           ├── latest -> captures/20260827T120000Z-a1b2c3
+│           ├── LATEST-web
+│           ├── LATEST-canonical-dataset
 │           └── captures/
 │               └── 20260827T120000Z-a1b2c3/
 │                   ├── capture.json
@@ -1029,14 +1039,19 @@ data/
 ├── derived/
 │   └── collections/
 │       └── etcsl/
+│           ├── reader -> captures/20260827T120000Z-a1b2c3/reader-generations/...
 │           ├── catalogue.sqlite
 │           ├── normalized/
 │           ├── passage-map.jsonl
 │           ├── facts/
 │           │   └── capture.pl
-│           └── reports/
-│               ├── completeness.json
-│               └── changes.html
+│           ├── reports/
+│           │   ├── completeness.json
+│           │   └── changes.html
+│           └── captures/
+│               └── 20260827T120000Z-a1b2c3/
+│                   ├── reader -> reader-generations/...
+│                   └── reader-generations/
 │
 └── workspace/
     ├── annotations/
@@ -1051,7 +1066,7 @@ Capture IDs should use UTC plus a collision-resistant suffix:
 20260827T120000Z-a1b2c3
 ```
 
-The `LATEST` pointer is a convenience. It is not the archive.
+The portable text pointer `LATEST` identifies the newest complete, verified, unfiltered collection capture. `LATEST-SOURCE_ID` identifies the newest fixity-verified capture in which that source completed successfully, including success with warnings. Pointer updates happen only after immediate whole-capture fixity verification. These pointers are conveniences, not the archive.
 
 ---
 

@@ -2,7 +2,7 @@
 
 **Preserve vulnerable digital text collections and the context that makes them intelligible.**
 
-> **Status: early implementation.** Configuration validation, installable public collection recipes, diagnostics, guarded Wget capture, fixity verification, conservative `LATEST` pointers, and ETCSL catalogue/deposit completeness analysis are available.
+> **Status: early implementation.** Configuration validation, installable public collection recipes, diagnostics, guarded Wget capture, fixity verification, conservative `LATEST` pointers, ETCSL completeness analysis, and a derived static reader are available.
 
 `text-preserver` is a local-first system for preserving scholarly corpora, digital editions, historical text archives, specialist bibliographies, and old academic websites that may become unavailable or difficult to reconstruct.
 
@@ -104,7 +104,7 @@ Verify a finalized capture:
 text-preserver verify /path/to/capture
 ```
 
-Verification checks object types, sizes, SHA-256 hashes, missing objects, and unexpected additions. Symlinks are rejected. A complete, verified, unfiltered capture updates the collection's portable `LATEST` pointer; warning, partial, failed, interrupted, and source-filtered captures never do.
+Verification checks object types, sizes, SHA-256 hashes, missing objects, and unexpected additions. Symlinks are rejected. A complete, verified, unfiltered capture updates the collection's portable `LATEST` pointer; warning, partial, failed, interrupted, and source-filtered captures never do. Each successful source also updates a portable `LATEST-SOURCE_ID` pointer after whole-capture fixity verification, so independently captured sources remain convenient to locate.
 
 Run collection-specific completeness analysis after fixity verification:
 
@@ -114,6 +114,24 @@ text-preserver analyze preservation etcsl /path/to/capture \
 ```
 
 Analysis reads the immutable capture and writes `completeness.json` only under `derived/`. It prefers the adapter snapshot preserved with the capture and records the adapter SHA-256; older captures without a snapshot use the current recipe adapter with an explicit warning. The ETCSL adapter compares catalogue IDs with deposited XML filenames, checks ZIP safety and CRCs, performs entity-stubbed XML-shell parsing, verifies root IDs, and reports missing entity and DTD dependencies separately from work-level completeness.
+
+Build a local static reader from a verified capture:
+
+```bash
+text-preserver derive reader etcsl /path/to/capture \
+  --config collections.toml
+```
+
+The capture path may be omitted. A recipe's `reader_source` selects its newest verified source capture through `LATEST-SOURCE_ID`, with collection `LATEST` as the fallback. Reader generations are written under the capture-scoped `derived/` directory; a successful build atomically updates `derived/collections/COLLECTION_ID/reader` to the immutable current generation. Incomplete builds remain inspectable but never replace that pointer.
+
+Open the current reader in the default browser, or print its stable local path for another program such as Emacs EWW:
+
+```bash
+text-preserver open reader etcsl --config collections.toml
+text-preserver open reader etcsl --config collections.toml --print-only
+```
+
+The reader's `index.html` links all compositions to responsive side-by-side transliteration and translation pages and works without JavaScript or network access. Unresolved ETCSL-specific entities remain visible as source tokens rather than being silently discarded.
 
 Initial Wget plans ignore ambient proxies and do not follow redirects because Wget's domain filter does not constrain redirect targets. Redirect destinations must be reviewed and configured as explicit seeds until redirect-aware host enforcement is implemented.
 
@@ -133,7 +151,7 @@ ETCSL
 
 The initial milestone is to capture the website and canonical deposit independently, preserve their provenance, verify their bytes, and report whether the expected compositions and representations were captured.
 
-The ETCSL recipe includes fixture-tested preservation analysis and optional Ciao representation rules. A bounded live catalogue check on 2026-08-27 found 394 transliterations and 381 translations; 13 category-0 catalogue compositions are intentionally untranslated. The canonical deposit has matching work counts, but its text XML relies on undeclared entities and missing ETCSL extension files, which the report records explicitly. See [`collections/etcsl/README.md`](collections/etcsl/README.md) for scope and usage.
+The ETCSL recipe includes fixture-tested preservation analysis, a derived static reader, and optional Ciao representation rules. A bounded live catalogue check on 2026-08-27 found 394 transliterations and 381 translations; 13 category-0 catalogue compositions are intentionally untranslated. The canonical deposit has matching work counts, but its text XML relies on undeclared entities and missing ETCSL extension files, which the report records explicitly. See [`collections/etcsl/README.md`](collections/etcsl/README.md) for scope and usage.
 
 [GRETIL](https://gretil.sub.uni-goettingen.de/) is the proposed second collection and generalization test because it adds multiple languages, legacy encodings, TEI migrations, repository lineages, and representation-specific rights.
 

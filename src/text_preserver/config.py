@@ -333,6 +333,11 @@ def _load_collection(
         homepage = _http_url(homepage, f"{label}.homepage", allow_fragment=True)
 
     analysis = _load_analysis(table.get("analysis", {}), f"{label}.analysis")
+    reader_source = analysis.get("reader_source")
+    if reader_source is not None and reader_source not in seen_source_ids:
+        raise ConfigError(
+            f"{label}.analysis.reader_source: unknown source ID {reader_source!r}"
+        )
     return CollectionConfig(
         id=collection_id,
         title=_string(table.get("title"), f"{label}.title"),
@@ -418,10 +423,11 @@ def _load_analysis(value: Any, label: str) -> dict[str, Any]:
         "ciao_rules",
         "expected_work_count",
         "required_representation_kinds",
+        "reader_source",
     }
     _only_keys(table, keys, label)
     result: dict[str, Any] = {}
-    for key in {"inventory_adapter", "normalizer", "ciao_rules"}:
+    for key in {"inventory_adapter", "normalizer", "ciao_rules", "reader_source"}:
         if key in table:
             result[key] = _string(table[key], f"{label}.{key}")
     if "expected_work_count" in table:
