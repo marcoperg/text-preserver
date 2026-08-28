@@ -2,7 +2,7 @@
 
 **Preserve vulnerable digital text collections and the context that makes them intelligible.**
 
-> **Status: early implementation.** Configuration validation, installable public recipes, `doctor`, `collections list/show`, guarded Wget capture, fixity verification, conservative latest-capture pointers, ETCSL completeness analysis, a derived static reader, and a localhost integration harness exist. Other command examples describe the target interface unless explicitly marked as implemented.
+> **Status: early implementation.** Configuration validation, installable ETCSL and GRETIL recipes, `doctor`, `collections list/show`, guarded Wget capture, fixity verification, conservative latest-capture pointers, collection-specific completeness analysis, an ETCSL static reader, and a localhost integration harness exist. Other command examples describe the target interface unless explicitly marked as implemented.
 
 `text-preserver` is a preservation-first system for scholarly corpora, digital editions, historical text archives, specialist bibliographies, old academic websites, and other text-centered collections that may become unavailable or difficult to reconstruct.
 
@@ -1170,7 +1170,7 @@ This one collection can validate the entire architecture without prematurely bui
 
 ### GRETIL: second collection and generalization test
 
-The second target should be **GRETIL — the Göttingen Register of Electronic Texts in Indian Languages**.
+The second implemented recipe targets **GRETIL — the Göttingen Register of Electronic Texts in Indian Languages**.
 
 GRETIL is especially valuable as an architectural test because it contains heterogeneous text traditions, languages, encodings, formats, and publication histories.
 
@@ -1229,38 +1229,52 @@ ETCSL is relatively regular. GRETIL tests whether the model survives:
 - Which e-library files remain metadata-only pending legal review?
 - Are different files representations of one work or genuinely different versions?
 
-#### Proposed GRETIL recipe
+#### Initial GRETIL recipe
+
+The implemented first recipe uses the publisher's static site as its reviewed boundary. A bounded study on 2026-08-28 found 801 TEI identifiers, 802 analytic HTML identifiers, 801 plain-text identifiers, 21 XDXF dictionaries, and eight cumulative ZIPs. The static register has not been updated since September 2020 and publishes no checksums or sitemap. The ZIPs total about 392.5 MiB compressed and 1.49 GiB expanded, use paths that differ from the public URL tree, and omit the separately linked dictionaries.
+
+The initial source units are:
+
+```text
+gretil
+├── current-register
+├── bulk-packages
+├── dictionaries
+└── frozen-register
+```
+
+The fixture-backed adapter pins the reviewed TEI identifier set by digest, checks representation relationships and exact package names, validates TEI XML identity through explicit reviewed filename mappings and root `xml:id` values, and validates ZIP structure and CRCs without extraction. The OPAC and eDocs repository are intentionally excluded because both publish robots rules disallowing automated access.
+
+The current recipe layout is:
 
 ```text
 collections/gretil/
 ├── collection.toml
 ├── README.md
 ├── seeds/
-│   ├── legacy-site.txt
-│   ├── textgrid.txt
-│   └── dariah-de.txt
+│   ├── current-register.txt
+│   ├── bulk-packages.txt
+│   ├── dictionaries.txt
+│   └── frozen-register.txt
 ├── inventory.py
-├── normalize_tei.py
-├── map_legacy_to_tei.py
-├── encodings.py
-├── checks.toml
-├── rules/
-│   └── preservation.pl
 └── fixtures/
+    ├── catalogue.html
+    ├── reviewed-tei-ids.txt
+    └── sample-expected-ids.txt
 ```
 
-Potential sources should be enabled gradually:
+Later sources and transformations should be enabled gradually:
 
 ```text
-gretil
-├── legacy-web
+gretil follow-up
+├── direct-current-corpus
+├── legacy-encoding-payloads
 ├── textgrid-project
 ├── dariah-legacy-zips
-├── generated-html
 └── edocs-e-library
 ```
 
-The first GRETIL milestone should not attempt to capture everything immediately. It should select one subcollection and prove the mapping between:
+The next GRETIL milestone should not capture every linked object indiscriminately. It should prove selected mappings between:
 
 ```text
 legacy file → TEI source → generated HTML → repository metadata

@@ -1,4 +1,4 @@
-recipes = ["public:etcsl"]
+recipes = ["public:etcsl", "public:gretil"]
 
 [project]
 archive_root = "./data/archive"

@@ -2,7 +2,7 @@
 
 **Preserve vulnerable digital text collections and the context that makes them intelligible.**
 
-> **Status: early implementation.** Configuration validation, installable public collection recipes, diagnostics, guarded Wget capture, fixity verification, conservative `LATEST` pointers, ETCSL completeness analysis, and a derived static reader are available.
+> **Status: early implementation.** Configuration validation, installable ETCSL and GRETIL recipes, diagnostics, guarded Wget capture, fixity verification, conservative `LATEST` pointers, collection-specific completeness analysis, and an ETCSL static reader are available.
 
 `text-preserver` is a local-first system for preserving scholarly corpora, digital editions, historical text archives, specialist bibliographies, and old academic websites that may become unavailable or difficult to reconstruct.
 
@@ -72,9 +72,10 @@ cp collections.example.toml collections.toml
 text-preserver doctor --config collections.toml
 text-preserver collections list --config collections.toml
 text-preserver collections show etcsl --config collections.toml
+text-preserver collections show gretil --config collections.toml
 ```
 
-The example configuration references the public ETCSL recipe as `public:etcsl`. Local configuration owns operator identity, storage paths, and capture defaults; recipes own public collection metadata, sources, scope, and analysis settings. Relative recipe paths remain supported. Recipe files are preserved with captures for provenance.
+The example configuration references the public ETCSL and GRETIL recipes as `public:etcsl` and `public:gretil`. Local configuration owns operator identity, storage paths, and capture defaults; recipes own public collection metadata, sources, scope, and analysis settings. Relative recipe paths remain supported. Recipe files are preserved with captures for provenance.
 
 `doctor` validates collection and source structure, rejects unsafe scope and credential-bearing arguments, checks GNU Wget WARC support, checks storage locations, and reports available space. `collections list/show` display the fully resolved configuration without making requests.
 
@@ -135,7 +136,7 @@ The reader's `index.html` links all compositions to responsive side-by-side tran
 
 Initial Wget plans ignore ambient proxies and do not follow redirects because Wget's domain filter does not constrain redirect targets. Redirect destinations must be reviewed and configured as explicit seeds until redirect-aware host enforcement is implemented.
 
-## First Collection
+## Initial Collections
 
 The first vertical slice targets the [Electronic Text Corpus of Sumerian Literature](https://etcsl.orinst.ox.ac.uk/) (ETCSL).
 
@@ -153,7 +154,7 @@ The initial milestone is to capture the website and canonical deposit independen
 
 The ETCSL recipe includes fixture-tested preservation analysis, a derived static reader, and optional Ciao representation rules. A bounded live catalogue check on 2026-08-27 found 394 transliterations and 381 translations; 13 category-0 catalogue compositions are intentionally untranslated. The canonical deposit has matching work counts, but its text XML relies on undeclared entities and missing ETCSL extension files, which the report records explicitly. See [`collections/etcsl/README.md`](collections/etcsl/README.md) for scope and usage.
 
-[GRETIL](https://gretil.sub.uni-goettingen.de/) is the proposed second collection and generalization test because it adds multiple languages, legacy encodings, TEI migrations, repository lineages, and representation-specific rights.
+[GRETIL](https://gretil.sub.uni-goettingen.de/) is the second collection and generalization test. Its initial recipe separates the current register, eight cumulative corpus packages, 21 separately published dictionaries, and frozen Unicode/CSX/REE documentation. Fixture-backed analysis pins the 801-identifier TEI inventory, checks published representation lineages and exact package sets, and validates ZIP safety and CRCs without extraction. The remaining direct corpus, legacy encoded payloads, and repository migrations are staged follow-up work; OPAC/eDocs crawling is excluded by their robots policy. See [`collections/gretil/README.md`](collections/gretil/README.md).
 
 ## Principles
 

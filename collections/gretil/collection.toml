@@ -1,0 +1,141 @@
+[collection]
+id = "gretil"
+title = "GRETIL - Goettingen Register of Electronic Texts in Indian Languages"
+homepage = "https://gretil.sub.uni-goettingen.de/gretil.html"
+description = "Multilingual South Asian texts in TEI XML, generated HTML and plain text, legacy encodings, dictionaries, and cumulative packages."
+risk_note = "The static publisher site has not been updated since September 2020, has no checksums or sitemap, and exposes internally inconsistent bulk packages."
+rights_note = "Rights vary by item and representation; preserve embedded notices and do not infer a collection-wide redistribution licence."
+tags = ["south-asia", "tei", "multilingual", "legacy-encodings", "dictionaries"]
+enabled = true
+
+[collection.capture]
+wait = 1.0
+random_wait = true
+timeout = 60
+tries = 2
+limit_rate = "2M"
+
+[collection.analysis]
+inventory_adapter = "inventory.py"
+expected_work_count = 801
+required_representation_kinds = ["tei"]
+
+[[collection.sources]]
+id = "current-register"
+kind = "web"
+title = "Current GRETIL register and project context"
+description = "The published catalogue, update history, Atom feed, e-library description, and interface assets."
+required = true
+seeds = [
+  "https://gretil.sub.uni-goettingen.de/",
+  "https://gretil.sub.uni-goettingen.de/gretil.htm",
+  "https://gretil.sub.uni-goettingen.de/gretil.html",
+  "https://gretil.sub.uni-goettingen.de/hist.html",
+  "https://gretil.sub.uni-goettingen.de/feed.xml",
+  "https://gretil.sub.uni-goettingen.de/gr_elib.htm",
+  "https://gretil.sub.uni-goettingen.de/style.css?rnd=132",
+  "https://gretil.sub.uni-goettingen.de/script.js",
+  "https://gretil.sub.uni-goettingen.de/GAU-SUB_einzeilig_weiss.png",
+  "https://gretil.sub.uni-goettingen.de/i_download.gif",
+  "https://gretil.sub.uni-goettingen.de/gr_elib2.gif",
+  "https://gretil.sub.uni-goettingen.de/css/style-1.css",
+]
+allowed_hosts = ["gretil.sub.uni-goettingen.de"]
+
+[collection.sources.capture]
+recursive = false
+page_requisites = false
+convert_links = false
+adjust_extension = false
+quota = "10M"
+
+[[collection.sources]]
+id = "bulk-packages"
+kind = "http-file"
+title = "Publisher cumulative corpus packages"
+description = "Eight publisher-linked ZIP files spanning the language corpora and secondary resources."
+required = true
+seeds = [
+  "https://gretil.sub.uni-goettingen.de/gretil/1_sanskr.zip",
+  "https://gretil.sub.uni-goettingen.de/gretil/2_pali.zip",
+  "https://gretil.sub.uni-goettingen.de/gretil/2_prakrt.zip",
+  "https://gretil.sub.uni-goettingen.de/gretil/3_nia.zip",
+  "https://gretil.sub.uni-goettingen.de/gretil/4_drav.zip",
+  "https://gretil.sub.uni-goettingen.de/gretil/5_oldjav.zip",
+  "https://gretil.sub.uni-goettingen.de/gretil/5_tib.zip",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres.zip",
+]
+allowed_hosts = ["gretil.sub.uni-goettingen.de"]
+
+[collection.sources.capture]
+recursive = false
+page_requisites = false
+convert_links = false
+adjust_extension = false
+quota = "500M"
+
+[[collection.sources]]
+id = "dictionaries"
+kind = "http-file"
+title = "Publisher-linked XDXF dictionaries"
+description = "Twenty-one dictionary and encyclopaedia files linked by the register but omitted from the cumulative secondary-resources ZIP."
+required = true
+seeds = [
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/1_comp/aufrcc.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/aptese.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/aptees.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/benfse.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/vcpss.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/pwk.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/pwg.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/boppsl.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/bores.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/bursf.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/cappse.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/cappsg.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/grasg_a.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/macdse.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/mwse.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/mwse72.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/mwes.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/skdss.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/schnzsw.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/2_dict/stcsf.dict.xdxf",
+  "https://gretil.sub.uni-goettingen.de/gretil/6_sres/3_encycl/pese.dict.xdxf",
+]
+allowed_hosts = ["gretil.sub.uni-goettingen.de"]
+
+[collection.sources.capture]
+recursive = false
+page_requisites = false
+convert_links = false
+adjust_extension = false
+quota = "1G"
+
+[[collection.sources]]
+id = "frozen-register"
+kind = "web"
+title = "Frozen Unicode and legacy-encoding registers"
+description = "The 2019 UTF-8, CSX, and REE indexes plus encoding documentation retained by GRETIL."
+required = true
+seeds = [
+  "https://gretil.sub.uni-goettingen.de/gretilbk.htm",
+  "https://gretil.sub.uni-goettingen.de/gret_utfbk.htm",
+  "https://gretil.sub.uni-goettingen.de/gret_csxbk.htm",
+  "https://gretil.sub.uni-goettingen.de/gret_reebk.htm",
+  "https://gretil.sub.uni-goettingen.de/gretinfobk.htm",
+  "https://gretil.sub.uni-goettingen.de/gretil/gretdiac.pdf",
+  "https://gretil.sub.uni-goettingen.de/gretil/gretdias.pdf",
+  "https://gretil.sub.uni-goettingen.de/SUB-Header_logo_1200.png",
+  "https://gretil.sub.uni-goettingen.de/b_jaune.gif",
+  "https://gretil.sub.uni-goettingen.de/css/style-1.css",
+  "https://gretil.sub.uni-goettingen.de/images/uebersc/unten4.gif",
+]
+allowed_hosts = ["gretil.sub.uni-goettingen.de"]
+
+[collection.sources.capture]
+recursive = false
+page_requisites = false
+convert_links = false
+adjust_extension = false
+quota = "25M"

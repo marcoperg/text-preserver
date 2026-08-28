@@ -175,6 +175,8 @@ allowed_hosts = ["example.org"]
         self.assertEqual(config.collections[0].id, "example-corpus")
         self.assertEqual(config.collections[1].id, "etcsl")
         self.assertEqual(config.collections[1].recipe_path, public_recipe_path("etcsl"))
+        self.assertEqual(config.collections[2].id, "gretil")
+        self.assertEqual(config.collections[2].recipe_path, public_recipe_path("gretil"))
 
     def test_rejects_unsafe_public_recipe_id(self) -> None:
         config = 'recipes = ["public:../etcsl"]\n\n' + VALID_CONFIG.split(

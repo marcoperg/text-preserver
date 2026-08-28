@@ -47,3 +47,19 @@ where = ["src"]
 "share/text-preserver/collections/etcsl/rules" = [
   "collections/etcsl/rules/preservation.pl",
 ]
+"share/text-preserver/collections/gretil" = [
+  "collections/gretil/README.md",
+  "collections/gretil/collection.toml",
+  "collections/gretil/inventory.py",
+]
+"share/text-preserver/collections/gretil/fixtures" = [
+  "collections/gretil/fixtures/catalogue.html",
+  "collections/gretil/fixtures/reviewed-tei-ids.txt",
+  "collections/gretil/fixtures/sample-expected-ids.txt",
+]
+"share/text-preserver/collections/gretil/seeds" = [
+  "collections/gretil/seeds/bulk-packages.txt",
+  "collections/gretil/seeds/current-register.txt",
+  "collections/gretil/seeds/dictionaries.txt",
+  "collections/gretil/seeds/frozen-register.txt",
+]
