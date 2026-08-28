@@ -33,6 +33,84 @@ ENTITY_DECL_RE = re.compile(r"<!ENTITY\s+(?!%\s)([A-Za-z][A-Za-z0-9._:-]*)\s")
 SYSTEM_REF_RE = re.compile(r"\bSYSTEM\s+['\"]([^'\"]+)['\"]")
 PUBLIC_REF_RE = re.compile(r"\bPUBLIC\s+['\"][^'\"]*['\"]\s+['\"]([^'\"]+)['\"]")
 BUILTIN_ENTITIES = frozenset({"amp", "apos", "gt", "lt", "quot"})
+# ETCSL entities must take precedence over same-named HTML entities such as mu.
+ETCSL_CHARACTER_ENTITIES = {
+    "aleph": "’",
+    "C": "Š",
+    "c": "š",
+    "G": "Ĝ",
+    "g": "ĝ",
+    "H": "Ḫ",
+    "h": "ḫ",
+    "S": "Ṣ",
+    "s": "ṣ",
+    "T": "Ṭ",
+    "t": "ṭ",
+    "X": "…",
+    "damb": "[damb]",
+    "dame": "[dame]",
+    "suppb": "[suppb]",
+    "suppe": "[suppe]",
+    "qryb": "[qryb]",
+    "qrye": "[qre]",
+    "subb": "[subb]",
+    "sube": "[sube]",
+    "s0": "₀",
+    "s1": "₁",
+    "s2": "₂",
+    "s3": "₃",
+    "s4": "₄",
+    "s5": "₅",
+    "s6": "₆",
+    "s7": "₇",
+    "s8": "₈",
+    "s9": "₉",
+    "times": "×",
+    "plus": "+",
+    "commat": "@",
+    "sect": "§",
+}
+ETCSL_DETERMINATIVE_ENTITIES = {
+    "ance": "anše",
+    "cah2": "šah₂",
+    "d": "d",
+    "dug": "dug",
+    "e2": "e₂",
+    "f": "f",
+    "gi": "gi",
+    "gud": "gud",
+    "id2": "id₂",
+    "iku": "iku",
+    "im": "im",
+    "itid": "itid",
+    "jic": "ĝiš",
+    "kac": "kaš",
+    "ki": "ki",
+    "ku6": "ku₆",
+    "kuc": "kuš",
+    "kur": "kur",
+    "lu2": "lu₂",
+    "m": "m",
+    "mu": "mu",
+    "mucen": "mušen",
+    "mul": "mul",
+    "na4": "na₄",
+    "ninda": "ninda",
+    "sa": "sa",
+    "sar": "sar",
+    "tug2": "tug₂",
+    "tum9": "tum₉",
+    "u2": "u₂",
+    "udu": "udu",
+    "urud": "urud",
+    "uzu": "uzu",
+    "zabar": "zabar",
+}
+ETCSL_HORIZONTAL_RULING = "[[TP-ETCSL-HR]]"
+ETCSL_DETERMINATIVE_TOKEN = "[[TP-ETCSL-DET:{name}]]"
+ETCSL_READER_TOKEN_RE = re.compile(
+    r"\[\[TP-ETCSL-(?:HR|DET:(?P<determinative>[a-z0-9]+))\]\]"
+)
 MAX_ARCHIVE_SIZE = 100 * 1024 * 1024
 MAX_ARCHIVE_ENTRIES = 10_000
 MAX_ENTRY_SIZE = 20 * 1024 * 1024
@@ -428,6 +506,13 @@ def _parse_reader_xml(
 
     def replace(match: re.Match[str]) -> str:
         name = match.group(1)
+        replacement = ETCSL_CHARACTER_ENTITIES.get(name)
+        if replacement is not None:
+            return replacement
+        if name in ETCSL_DETERMINATIVE_ENTITIES:
+            return ETCSL_DETERMINATIVE_TOKEN.format(name=name)
+        if name == "hr":
+            return ETCSL_HORIZONTAL_RULING
         if name in BUILTIN_ENTITIES:
             return match.group(0)
         replacement = HTML5_ENTITIES.get(f"{name};")
@@ -447,7 +532,7 @@ def _reader_title(root: ElementTree.Element, identifier: str) -> str:
     title = root.find("./teiHeader/fileDesc/titleStmt/title")
     if title is None:
         return f"Composition {identifier}"
-    value = " ".join("".join(title.itertext()).split())
+    value = " ".join(_plain_reader_text("".join(title.itertext())).split())
     for suffix in TITLE_SUFFIXES:
         if value.endswith(suffix):
             return value.removesuffix(suffix)
@@ -506,8 +591,9 @@ def _render_reader_index(
   <p class="lede">A local catalogue reconstructed from the verified canonical XML deposit.</p>
 </header>
 <main>
-  <aside class="notice">This is not the original ETCSL website. Named entities without
-  preserved definitions remain visible as source tokens such as <code>&amp;h;</code>.</aside>
+  <aside class="notice">This is not the original ETCSL website. ETCSL character,
+  determinative, subscript, and editorial entities are rendered from the corpus support
+  declarations; any unknown entity remains visible as its source token.</aside>
   <div class="catalogue-meta"><span>{len(identifiers)} compositions</span>
   <span>Capture <code>{escape_html(capture_id)}</code></span></div>
   {content}
@@ -575,7 +661,7 @@ def _render_text_bodies(root: ElementTree.Element) -> str:
                 label_parts.append(str(text.get("n")))
             head = text.find("./head")
             if head is not None:
-                head_text = " ".join("".join(head.itertext()).split())
+                head_text = " ".join(_plain_reader_text("".join(head.itertext())).split())
                 if head_text:
                     label_parts.append(head_text)
             heading = " - ".join(label_parts)
@@ -589,7 +675,7 @@ def _render_text_bodies(root: ElementTree.Element) -> str:
 def _render_blocks(element: ElementTree.Element) -> str:
     parts: list[str] = []
     if element.text and element.text.strip():
-        parts.append(f"<p>{escape_html(element.text.strip())}</p>")
+        parts.append(f"<p>{_render_reader_text(element.text.strip())}</p>")
     for child in element:
         tag = child.tag
         if tag == "head":
@@ -623,15 +709,44 @@ def _render_blocks(element: ElementTree.Element) -> str:
             if content.strip():
                 parts.append(f'<div class="annotation-block">{content}</div>')
         if child.tail and child.tail.strip():
-            parts.append(f"<p>{escape_html(child.tail.strip())}</p>")
+            parts.append(f"<p>{_render_reader_text(child.tail.strip())}</p>")
     return "".join(parts)
 
 
 def _render_inline_content(element: ElementTree.Element) -> str:
-    parts = [escape_html(element.text or "")]
+    parts = [_render_reader_text(element.text or "")]
     for child in element:
         parts.append(_render_inline_element(child))
-        parts.append(escape_html(child.tail or ""))
+        parts.append(_render_reader_text(child.tail or ""))
+    return "".join(parts)
+
+
+def _plain_reader_text(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        name = match.group("determinative")
+        return "―" if name is None else ETCSL_DETERMINATIVE_ENTITIES[name]
+
+    return ETCSL_READER_TOKEN_RE.sub(replace, value)
+
+
+def _render_reader_text(value: str) -> str:
+    parts: list[str] = []
+    position = 0
+    for match in ETCSL_READER_TOKEN_RE.finditer(value):
+        parts.append(escape_html(value[position : match.start()]))
+        name = match.group("determinative")
+        if name is None:
+            parts.append(
+                '<span class="ruling" role="separator" title="horizontal ruling">―</span>'
+            )
+        else:
+            label = ETCSL_DETERMINATIVE_ENTITIES[name]
+            parts.append(
+                f'<sup class="determinative" title="ETCSL determinative {escape_html(name, quote=True)}">'
+                f"{escape_html(label)}</sup>"
+            )
+        position = match.end()
+    parts.append(escape_html(value[position:]))
     return "".join(parts)
 
 
@@ -705,6 +820,8 @@ main {{ width:min(1100px,92vw); margin:2rem auto 5rem; }}
 .note {{ color:var(--muted); font-size:.9em; }} .gap {{ color:var(--accent); }}
 .foreign {{ font-style:italic; }} .unclear {{ text-decoration:underline dotted; }}
 .correction {{ border-bottom:1px dashed var(--accent); }} .milestone {{ color:var(--accent); }}
+.determinative {{ color:var(--accent); font-style:normal; }}
+.ruling {{ display:inline-block; min-width:7rem; color:var(--muted); letter-spacing:.1em; }}
 .trailer {{ border-top:1px solid var(--rule); padding-top:1rem; font-style:italic; }}
 footer {{ width:min(1100px,92vw); margin:3rem auto; padding-top:1rem; border-top:1px solid var(--rule); font-size:.72rem; }}
 @media (max-width:800px) {{ .parallel-text {{ grid-template-columns:1fr; }} .catalogue-group li {{ grid-template-columns:1fr; }} }}

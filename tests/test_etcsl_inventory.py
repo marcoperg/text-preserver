@@ -108,8 +108,8 @@ class EtcslInventoryTests(unittest.TestCase):
         root, unresolved = inventory._parse_reader_xml(
             """
 <TEI.2 id="t.1.1.1"><teiHeader><fileDesc><titleStmt>
-<title>&h;&lt;script&gt;alert(1)&lt;/script&gt; -- an English prose translation</title>
-</titleStmt></fileDesc></teiHeader><text><body><p n="1">Safe &h; text.</p></body></text></TEI.2>
+<title>&nosuch;&lt;script&gt;alert(1)&lt;/script&gt; -- an English prose translation</title>
+</titleStmt></fileDesc></teiHeader><text><body><p n="1">Safe &nosuch; text.</p></body></text></TEI.2>
 """.strip(),
             "fixture.xml",
         )
@@ -125,9 +125,40 @@ class EtcslInventoryTests(unittest.TestCase):
             None,
         )
 
-        self.assertEqual(unresolved, {"h"})
-        self.assertIn("&amp;h;&lt;script&gt;alert(1)&lt;/script&gt;", page)
+        self.assertEqual(unresolved, {"nosuch"})
+        self.assertIn("&amp;nosuch;&lt;script&gt;alert(1)&lt;/script&gt;", page)
         self.assertNotIn("<script>", page)
+
+    def test_reader_resolves_etcsl_entities_before_html_entities(self) -> None:
+        root, unresolved = inventory._parse_reader_xml(
+            """
+<TEI.2 id="t.1.1.1"><teiHeader><fileDesc><titleStmt>
+<title>&C;ama&c;-&t;ab to Ilak-ni&aleph;id -- an English prose translation</title>
+</titleStmt></fileDesc></teiHeader><text><body><p n="1">
+&d;en-ki, &jic;ig, &mu;jen, A&s2;, &X;&hr;
+</p></body></text></TEI.2>
+""".strip(),
+            "fixture.xml",
+        )
+
+        page = inventory._render_work_page(
+            "1.1.1",
+            inventory._reader_title(root, "1.1.1"),
+            {"translation": root, "translation_path": "fixture.xml"},
+            "20260827T120000Z-a1b2c3",
+            "0" * 64,
+            None,
+            None,
+        )
+
+        self.assertEqual(unresolved, set())
+        self.assertIn("Šamaš-ṭab to Ilak-ni’id", page)
+        self.assertIn('class="determinative" title="ETCSL determinative d">d</sup>en-ki', page)
+        self.assertIn('title="ETCSL determinative jic">ĝiš</sup>ig', page)
+        self.assertIn('title="ETCSL determinative mu">mu</sup>jen', page)
+        self.assertIn("A₂, …", page)
+        self.assertIn('role="separator" title="horizontal ruling">―</span>', page)
+        self.assertNotIn("&amp;aleph;", page)
 
     def test_reader_handles_translation_without_transliteration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
