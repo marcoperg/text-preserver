@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ElementTree
 import zipfile
 
 from text_preserver.capture import plan_capture
@@ -183,7 +184,13 @@ class GretilInventoryTests(unittest.TestCase):
                                 f"1_sanskr/tei/{identifier}.xml",
                                 (
                                     '<TEI xmlns="http://www.tei-c.org/ns/1.0" '
-                                    f'xml:id="{root_id}" />'
+                                    f'xml:id="{root_id}"><teiHeader><fileDesc>'
+                                    f"<titleStmt><title>{identifier}</title></titleStmt>"
+                                    '<publicationStmt><availability status="free">'
+                                    "<p>Fixture rights</p></availability></publicationStmt>"
+                                    "<sourceDesc><p>Fixture source</p></sourceDesc>"
+                                    "</fileDesc></teiHeader><text><body>"
+                                    "<p>Fixture body</p></body></text></TEI>"
                                 ),
                             )
             for name in inventory.EXPECTED_DICTIONARIES:
@@ -221,6 +228,19 @@ class GretilInventoryTests(unittest.TestCase):
             self.assertEqual(report["dictionaries"]["count"], 21)
             self.assertEqual(report["bulk_tei"]["count"], 3)
 
+            reader = Path(directory) / "reader"
+            reader_payload = inventory.write_static_reader(
+                capture,
+                output_directory=reader,
+                expected_work_count=3,
+            )
+            self.assertEqual(reader_payload["status"], "complete_with_warnings")
+            self.assertEqual(reader_payload["summary"]["work_count"], 3)
+            self.assertEqual(len(list((reader / "works").glob("*.html"))), 3)
+            self.assertIn(self.expected_ids[0], (reader / "index.html").read_text())
+            self.assertTrue((reader / "about.html").is_file())
+            self.assertNotIn("<script", (reader / "index.html").read_text())
+
             with zipfile.ZipFile(
                 bulk / inventory.EXPECTED_BULK_PACKAGES[0],
                 "w",
@@ -237,6 +257,57 @@ class GretilInventoryTests(unittest.TestCase):
                 any("absent from bulk" in value for value in missing_tei["errors"])
             )
 
+    def test_reader_renderer_preserves_mixed_content_and_escapes_markup(self) -> None:
+        element = ElementTree.fromstring(
+            """
+<p xmlns="http://www.tei-c.org/ns/1.0">before &lt;unsafe&gt;
+  <supplied>inserted</supplied> tail
+  <app><lem wit="#A">lemma</lem><rdg wit="#B">reading</rdg></app>
+  <ref target="#local">reference</ref><date when-iso="2020-09-10"/>
+  <hi rend="smaller">small text</hi>
+  <gap reason="lost"/><pb n="12"/>
+</p>
+""".strip()
+        )
+
+        rendered = inventory._render_tei_element(element)
+
+        self.assertIn("before &lt;unsafe&gt;", rendered)
+        self.assertIn("inserted", rendered)
+        self.assertIn("tail", rendered)
+        self.assertIn("lemma", rendered)
+        self.assertIn("#A", rendered)
+        self.assertIn("target: #local", rendered)
+        self.assertIn("2020-09-10", rendered)
+        self.assertIn('data-tei-rend="smaller"', rendered)
+        self.assertIn("gap: lost", rendered)
+        self.assertIn("page 12", rendered)
+        self.assertNotIn("<unsafe>", rendered)
+
+        availability = ElementTree.fromstring(
+            """
+<availability xmlns="http://www.tei-c.org/ns/1.0" status="restricted">
+  <licence target="https://example.org/licence">Local terms</licence>
+</availability>
+""".strip()
+        )
+        rights = inventory._reader_details("Availability", availability)
+        self.assertIn("status: restricted", rights)
+        self.assertIn("licence target: https://example.org/licence", rights)
+
+        line_group = ElementTree.fromstring(
+            """
+<lg xmlns="http://www.tei-c.org/ns/1.0" rend="bold" xml:id="verse-1">
+  <l><corr resp="#VGA">corrected</corr><pb n="3" edRef="#Apte1929"/></l>
+</lg>
+""".strip()
+        )
+        block = inventory._render_tei_element(line_group)
+        self.assertIn("line-group rend-bold", block)
+        self.assertIn("xml:id: verse-1", block)
+        self.assertIn("resp: #VGA", block)
+        self.assertIn("edRef: #Apte1929", block)
+
     def test_public_recipe_builds_bounded_nonrecursive_plan(self) -> None:
         config = load_config(REPOSITORY_ROOT / "collections.example.toml")
         collection = next(item for item in config.collections if item.id == "gretil")
@@ -244,6 +315,7 @@ class GretilInventoryTests(unittest.TestCase):
         plan = plan_capture(config, "gretil")
 
         self.assertEqual(collection.analysis["expected_work_count"], 801)
+        self.assertEqual(collection.analysis["reader_source"], "bulk-packages")
         self.assertEqual(
             [source.id for source in collection.sources],
             ["current-register", "bulk-packages", "dictionaries", "frozen-register"],

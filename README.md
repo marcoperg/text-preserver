@@ -2,7 +2,7 @@
 
 **Preserve vulnerable digital text collections and the context that makes them intelligible.**
 
-> **Status: early implementation.** Configuration validation, installable ETCSL and GRETIL recipes, diagnostics, guarded Wget capture, fixity verification, conservative `LATEST` pointers, collection-specific completeness analysis, and an ETCSL static reader are available.
+> **Status: early implementation.** Configuration validation, installable ETCSL and GRETIL recipes, diagnostics, guarded Wget capture, fixity verification, conservative `LATEST` pointers, collection-specific completeness analysis, and local static readers for ETCSL and GRETIL are available.
 
 `text-preserver` is a local-first system for preserving scholarly corpora, digital editions, historical text archives, specialist bibliographies, and old academic websites that may become unavailable or difficult to reconstruct.
 
@@ -121,6 +121,7 @@ Build a local static reader from a verified capture:
 ```bash
 text-preserver derive reader etcsl /path/to/capture \
   --config collections.toml
+text-preserver derive reader gretil --config collections.toml
 ```
 
 The capture path may be omitted. A recipe's `reader_source` selects its newest verified source capture through `LATEST-SOURCE_ID`, with collection `LATEST` as the fallback. Reader generations are written under the capture-scoped `derived/` directory; a successful build atomically updates `derived/collections/COLLECTION_ID/reader` to the immutable current generation. Incomplete builds remain inspectable but never replace that pointer.
@@ -130,9 +131,10 @@ Open the current reader in the default browser, or print its stable local path f
 ```bash
 text-preserver open reader etcsl --config collections.toml
 text-preserver open reader etcsl --config collections.toml --print-only
+text-preserver open reader gretil --config collections.toml
 ```
 
-The reader's `index.html` links all compositions to responsive side-by-side transliteration and translation pages and works without JavaScript or network access. Unresolved ETCSL-specific entities remain visible as source tokens rather than being silently discarded.
+The ETCSL reader links all compositions to responsive side-by-side transliteration and translation pages. The GRETIL reader streams all 801 reviewed TEI texts into full local work pages with item-level rights, source metadata, and package provenance. Both work without JavaScript or network access; unresolved or simplified source constructs remain visibly annotated rather than being silently discarded.
 
 Initial Wget plans ignore ambient proxies and do not follow redirects because Wget's domain filter does not constrain redirect targets. Redirect destinations must be reviewed and configured as explicit seeds until redirect-aware host enforcement is implemented.
 
@@ -154,7 +156,7 @@ The initial milestone is to capture the website and canonical deposit independen
 
 The ETCSL recipe includes fixture-tested preservation analysis, a derived static reader, and optional Ciao representation rules. A bounded live catalogue check on 2026-08-27 found 394 transliterations and 381 translations; 13 category-0 catalogue compositions are intentionally untranslated. The canonical deposit has matching work counts, but its text XML relies on undeclared entities and missing ETCSL extension files, which the report records explicitly. See [`collections/etcsl/README.md`](collections/etcsl/README.md) for scope and usage.
 
-[GRETIL](https://gretil.sub.uni-goettingen.de/) is the second collection and generalization test. Its initial recipe separates the current register, eight cumulative corpus packages, 21 separately published dictionaries, and frozen Unicode/CSX/REE documentation. Fixture-backed analysis pins the 801-identifier TEI inventory, checks published representation lineages and exact package sets, and validates ZIP safety and CRCs without extraction. The remaining direct corpus, legacy encoded payloads, and repository migrations are staged follow-up work; OPAC/eDocs crawling is excluded by their robots policy. See [`collections/gretil/README.md`](collections/gretil/README.md).
+[GRETIL](https://gretil.sub.uni-goettingen.de/) is the second collection and generalization test. Its recipe separates the current register, eight cumulative corpus packages, 21 separately published dictionaries, and frozen Unicode/CSX/REE documentation. Fixture-backed analysis pins the 801-identifier TEI inventory, checks published representation lineages and exact package sets, and validates ZIP safety and CRCs without extraction. Its derived reader renders the complete reviewed TEI corpus one record at a time, preserving item-level rights, source descriptions, mixed content, apparatus, and package provenance. The remaining direct corpus, legacy encoded payloads, and repository migrations are staged follow-up work; OPAC/eDocs crawling is excluded by their robots policy. See [`collections/gretil/README.md`](collections/gretil/README.md).
 
 ## Principles
 

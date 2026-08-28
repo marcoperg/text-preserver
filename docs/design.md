@@ -2,7 +2,7 @@
 
 **Preserve vulnerable digital text collections and the context that makes them intelligible.**
 
-> **Status: early implementation.** Configuration validation, installable ETCSL and GRETIL recipes, `doctor`, `collections list/show`, guarded Wget capture, fixity verification, conservative latest-capture pointers, collection-specific completeness analysis, an ETCSL static reader, and a localhost integration harness exist. Other command examples describe the target interface unless explicitly marked as implemented.
+> **Status: early implementation.** Configuration validation, installable ETCSL and GRETIL recipes, `doctor`, `collections list/show`, guarded Wget capture, fixity verification, conservative latest-capture pointers, collection-specific completeness analysis, ETCSL and GRETIL static readers, and a localhost integration harness exist. Other command examples describe the target interface unless explicitly marked as implemented.
 
 `text-preserver` is a preservation-first system for scholarly corpora, digital editions, historical text archives, specialist bibliographies, old academic websites, and other text-centered collections that may become unavailable or difficult to reconstruct.
 
@@ -579,7 +579,7 @@ The implemented first access derivative is built with:
 text-preserver derive reader COLLECTION_ID /path/to/capture
 ```
 
-The generic builder verifies capture fixity before and after rendering, executes only the current installed recipe code, constrains output paths and size, builds an immutable generation, atomically switches the capture-scoped `reader` pointer, and records capture, configuration, recipe, and renderer hashes. A usable build also atomically switches `derived/collections/ID/reader` directly to that immutable generation; incomplete builds cannot replace it. `text-preserver open reader COLLECTION_ID` opens this stable access path. The ETCSL renderer produces an inert local catalogue plus one page per composition under `derived/collections/ID/captures/CAPTURE/reader/`.
+The generic builder verifies capture fixity before and after rendering, executes only the current installed recipe code, constrains output paths and size, builds an immutable generation, atomically switches the capture-scoped `reader` pointer, and records capture, configuration, recipe, and renderer hashes. Small readers may return an in-memory text mapping. Large readers stream UTF-8 files into a quarantined generation that is checked for symlinks, special files, reserved paths, per-file size, total size, and file count before publication. A usable build also atomically switches `derived/collections/ID/reader` directly to that immutable generation; incomplete builds cannot replace it. `text-preserver open reader COLLECTION_ID` opens this stable access path. The ETCSL renderer produces side-by-side transliteration and translation pages. The GRETIL renderer processes the aggregate ZIP one TEI record at a time and produces complete full-text pages for the 801 reviewed register identifiers with item rights and package provenance.
 
 ---
 
@@ -1244,6 +1244,8 @@ gretil
 ```
 
 The fixture-backed adapter pins the reviewed TEI identifier set by digest, checks representation relationships and exact package names, validates TEI XML identity through explicit reviewed filename mappings and root `xml:id` values, and validates ZIP structure and CRCs without extraction. The OPAC and eDocs repository are intentionally excluded because both publish robots rules disallowing automated access.
+
+The implemented static reader selects the publisher's aggregate TEI package, excludes the documented bulk-only record, and streams all 801 reviewed texts into inert local pages. It preserves mixed text, common apparatus and editorial constructs, exact item-level availability/source statements, and archive provenance while refusing remote resources and external reference resolution.
 
 The current recipe layout is:
 

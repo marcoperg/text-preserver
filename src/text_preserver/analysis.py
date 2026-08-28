@@ -11,6 +11,7 @@ from pathlib import Path
 from pathlib import PurePosixPath
 import secrets
 import shutil
+import stat
 import sys
 import tempfile
 from types import ModuleType
@@ -191,55 +192,89 @@ def build_static_reader(
         prefer_preserved=False,
     )
     adapter, adapter_bytes = _load_adapter(adapter_path)
+    write = getattr(adapter, "write_static_reader", None)
     render = getattr(adapter, "render_static_reader", None)
-    if not callable(render):
-        raise AnalysisError(f"inventory adapter does not export render_static_reader(): {adapter_path}")
-
-    try:
-        payload = render(
-            capture_directory,
-            expected_work_count=collection.analysis.get("expected_work_count", 0),
-        )
-    except Exception as exc:
-        raise AnalysisError(f"reader adapter failed {adapter_path}: {exc}") from exc
-    files, summary, warnings, status = _validate_reader_payload(payload, adapter_path)
-
-    verification_after = verify_capture(capture_directory)
-    if not verification_after.ok:
-        raise AnalysisError(
-            "capture changed during reader generation: "
-            + "; ".join(verification_after.errors)
-        )
-
-    metadata: dict[str, Any] = {
-        "schema_version": 1,
-        "status": status,
-        "collection_id": collection.id,
-        "capture_id": capture_id,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "capture_manifest_sha256": _sha256(capture_directory / MANIFEST_NAME),
-        "configuration_sha256": hashlib.sha256(config.input_bytes).hexdigest(),
-        "recipe_sha256": (
-            hashlib.sha256(config.recipe_input_bytes[collection.recipe_path]).hexdigest()
-            if collection.recipe_path is not None
-            else None
-        ),
-        "expected_work_count": collection.analysis.get("expected_work_count", 0),
-        "renderer": {
-            "path": str(adapter_path),
-            "source": adapter_source,
-            "sha256": hashlib.sha256(adapter_bytes).hexdigest(),
-        },
-        "summary": summary,
-        "warnings": warnings,
-    }
     relative_parent = Path("collections") / collection.id / "captures" / capture_id
     parent = _ensure_derived_directory(config.project.derived_root, relative_parent)
     output_directory = parent / "reader"
+    files: dict[str, bytes] | None = None
+    staging: Path | None = None
     try:
-        generation_directory = _write_derived_tree(output_directory, files, metadata)
+        if callable(write):
+            staging = _create_derived_tree_staging(output_directory)
+            try:
+                payload = write(
+                    capture_directory,
+                    output_directory=staging,
+                    expected_work_count=collection.analysis.get("expected_work_count", 0),
+                )
+            except Exception as exc:
+                raise AnalysisError(f"reader adapter failed {adapter_path}: {exc}") from exc
+            summary, warnings, status = _validate_streamed_reader_payload(payload, adapter_path)
+            output_file_count, output_bytes = _validate_streamed_reader_tree(staging)
+            summary["output_file_count"] = output_file_count
+            summary["output_bytes"] = output_bytes
+        elif callable(render):
+            try:
+                payload = render(
+                    capture_directory,
+                    expected_work_count=collection.analysis.get("expected_work_count", 0),
+                )
+            except Exception as exc:
+                raise AnalysisError(f"reader adapter failed {adapter_path}: {exc}") from exc
+            files, summary, warnings, status = _validate_reader_payload(payload, adapter_path)
+        else:
+            raise AnalysisError(
+                "inventory adapter does not export write_static_reader() or "
+                f"render_static_reader(): {adapter_path}"
+            )
+
+        verification_after = verify_capture(capture_directory)
+        if not verification_after.ok:
+            raise AnalysisError(
+                "capture changed during reader generation: "
+                + "; ".join(verification_after.errors)
+            )
+
+        metadata: dict[str, Any] = {
+            "schema_version": 1,
+            "status": status,
+            "collection_id": collection.id,
+            "capture_id": capture_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "capture_manifest_sha256": _sha256(capture_directory / MANIFEST_NAME),
+            "configuration_sha256": hashlib.sha256(config.input_bytes).hexdigest(),
+            "recipe_sha256": (
+                hashlib.sha256(config.recipe_input_bytes[collection.recipe_path]).hexdigest()
+                if collection.recipe_path is not None
+                else None
+            ),
+            "expected_work_count": collection.analysis.get("expected_work_count", 0),
+            "renderer": {
+                "path": str(adapter_path),
+                "source": adapter_source,
+                "sha256": hashlib.sha256(adapter_bytes).hexdigest(),
+            },
+            "summary": summary,
+            "warnings": warnings,
+        }
+        if staging is not None:
+            generation_directory = _publish_derived_tree(
+                output_directory,
+                staging,
+                metadata,
+            )
+            staging = None
+        elif files is not None:
+            generation_directory = _write_derived_tree(output_directory, files, metadata)
+        else:
+            raise AnalysisError("reader adapter produced no output")
     except (OSError, TypeError, ValueError) as exc:
         raise AnalysisError(f"cannot write static reader {output_directory}: {exc}") from exc
+    finally:
+        if staging is not None and staging.exists():
+            _make_tree_writable(staging)
+            shutil.rmtree(staging)
     current_reader_updated = status in {"complete", "complete_with_warnings"}
     if current_reader_updated:
         current_index_path = _update_current_reader_pointer(
@@ -451,6 +486,93 @@ def _validate_reader_payload(
     return files, summary, warnings, status
 
 
+def _validate_streamed_reader_payload(
+    payload: Any,
+    adapter_path: Path,
+) -> tuple[dict[str, Any], list[str], str]:
+    if not isinstance(payload, dict):
+        raise AnalysisError(f"reader adapter returned an invalid payload: {adapter_path}")
+    if "files" in payload:
+        raise AnalysisError(f"streaming reader adapter returned in-memory files: {adapter_path}")
+    summary = payload.get("summary", {})
+    warnings = payload.get("warnings", [])
+    status = payload.get("status")
+    if not isinstance(summary, dict):
+        raise AnalysisError(f"reader adapter returned an invalid summary: {adapter_path}")
+    if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
+        raise AnalysisError(f"reader adapter returned invalid warnings: {adapter_path}")
+    if status not in {"complete", "complete_with_warnings", "incomplete"}:
+        raise AnalysisError(f"reader adapter returned an invalid status: {adapter_path}")
+    return summary, warnings, status
+
+
+def _validate_streamed_reader_tree(root: Path) -> tuple[int, int]:
+    if root.is_symlink() or not root.is_dir():
+        raise AnalysisError("streaming reader output is not a regular directory")
+    count = 0
+    total_size = 0
+    for path in root.rglob("*"):
+        path_stat = path.lstat()
+        if stat.S_ISLNK(path_stat.st_mode):
+            raise AnalysisError(f"streaming reader output contains a symlink: {path}")
+        if stat.S_ISDIR(path_stat.st_mode):
+            continue
+        if not stat.S_ISREG(path_stat.st_mode):
+            raise AnalysisError(f"streaming reader output contains a special file: {path}")
+        if path_stat.st_nlink != 1:
+            raise AnalysisError(f"streaming reader output contains a hard link: {path}")
+        relative = path.relative_to(root)
+        relative_name = relative.as_posix()
+        if "\\" in relative_name:
+            raise AnalysisError(f"streaming reader output contains an unsafe path: {relative}")
+        if relative_name == "metadata.json":
+            raise AnalysisError("streaming reader output contains reserved metadata.json")
+        count += 1
+        if count > 2_000:
+            raise AnalysisError("streaming reader adapter wrote more than 2,000 files")
+        size = path.stat().st_size
+        if size > 128 * 1024 * 1024:
+            raise AnalysisError(f"streaming reader output file exceeds 128 MiB: {relative}")
+        total_size += size
+        if total_size > 512 * 1024 * 1024:
+            raise AnalysisError("streaming reader adapter output exceeds 512 MiB")
+        try:
+            with path.open("r", encoding="utf-8") as stream:
+                opened_stat = os.fstat(stream.fileno())
+                if (opened_stat.st_dev, opened_stat.st_ino) != (
+                    path_stat.st_dev,
+                    path_stat.st_ino,
+                ):
+                    raise AnalysisError(
+                        f"streaming reader output changed during validation: {relative}"
+                    )
+                while stream.read(1024 * 1024):
+                    pass
+        except UnicodeError as exc:
+            raise AnalysisError(
+                f"streaming reader output is not UTF-8 text: {relative}"
+            ) from exc
+        final_stat = path.lstat()
+        if (
+            final_stat.st_dev,
+            final_stat.st_ino,
+            final_stat.st_size,
+            final_stat.st_mtime_ns,
+        ) != (
+            path_stat.st_dev,
+            path_stat.st_ino,
+            path_stat.st_size,
+            path_stat.st_mtime_ns,
+        ):
+            raise AnalysisError(
+                f"streaming reader output changed during validation: {relative}"
+            )
+    index = root / "index.html"
+    if index.is_symlink() or not index.is_file():
+        raise AnalysisError("streaming reader adapter did not write index.html")
+    return count, total_size
+
+
 def _load_adapter(path: Path) -> tuple[ModuleType, bytes]:
     identity = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
     name = f"text_preserver_recipe_{identity}"
@@ -503,6 +625,20 @@ def _write_derived_tree(
     files: Mapping[str, bytes],
     metadata: Mapping[str, Any],
 ) -> Path:
+    staging = _create_derived_tree_staging(target)
+    try:
+        for name, content in files.items():
+            destination = staging.joinpath(*PurePosixPath(name).parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(content)
+        return _publish_derived_tree(target, staging, metadata)
+    finally:
+        if staging.exists():
+            _make_tree_writable(staging)
+            shutil.rmtree(staging)
+
+
+def _create_derived_tree_staging(target: Path) -> Path:
     generations = target.parent / "reader-generations"
     if generations.is_symlink() or (generations.exists() and not generations.is_dir()):
         raise AnalysisError(f"reader generations path is not a regular directory: {generations}")
@@ -512,15 +648,25 @@ def _write_derived_tree(
             raise AnalysisError(f"derived reader pointer escapes its generations: {target}")
     elif target.exists() and not target.is_dir():
         raise AnalysisError(f"derived reader target is not a regular directory: {target}")
+    return Path(tempfile.mkdtemp(dir=generations, prefix=".build-"))
 
-    staging = Path(tempfile.mkdtemp(dir=generations, prefix=".build-"))
+
+def _publish_derived_tree(
+    target: Path,
+    staging: Path,
+    metadata: Mapping[str, Any],
+) -> Path:
+    generations = target.parent / "reader-generations"
+    resolved_staging = staging.resolve()
+    if (
+        staging.is_symlink()
+        or not staging.is_dir()
+        or not resolved_staging.is_relative_to(generations.resolve())
+    ):
+        raise AnalysisError(f"reader staging path escapes its generations: {staging}")
     link = target.parent / f".reader-link-{secrets.token_hex(8)}"
     legacy: Path | None = None
     try:
-        for name, content in files.items():
-            destination = staging.joinpath(*PurePosixPath(name).parts)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(content)
         (staging / "metadata.json").write_text(
             json.dumps(metadata, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -551,9 +697,6 @@ def _write_derived_tree(
         return generation
     finally:
         link.unlink(missing_ok=True)
-        if staging.exists():
-            _make_tree_writable(staging)
-            shutil.rmtree(staging)
 
 
 def _make_tree_read_only(root: Path) -> None:

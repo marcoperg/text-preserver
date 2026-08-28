@@ -257,6 +257,86 @@ def analyze_capture(capture_directory, **kwargs):
             rebuilt.index_path.resolve(),
         )
 
+    def test_builds_streaming_static_reader(self) -> None:
+        self.create_capture()
+        (self.root / "recipe/inventory.py").write_text(
+            """
+def write_static_reader(capture_directory, *, output_directory, expected_work_count):
+    works = output_directory / "works"
+    works.mkdir()
+    (output_directory / "index.html").write_text("<h1>Index</h1>", encoding="utf-8")
+    (works / "one.html").write_text("<p>Complete text</p>", encoding="utf-8")
+    return {
+        "status": "complete",
+        "summary": {"work_count": expected_work_count},
+        "warnings": [],
+    }
+""".strip(),
+            encoding="utf-8",
+        )
+
+        result = build_static_reader(
+            load_config(self.config_path),
+            "etcsl-fixture",
+            self.capture,
+        )
+
+        self.assertEqual(result.metadata["summary"]["output_file_count"], 2)
+        self.assertGreater(result.metadata["summary"]["output_bytes"], 0)
+        self.assertTrue((result.output_directory / "works/one.html").is_file())
+        self.assertEqual(result.index_path.stat().st_mode & 0o222, 0)
+        self.assertTrue(verify_capture(self.capture).ok)
+
+    def test_streaming_reader_rejects_reserved_metadata(self) -> None:
+        self.create_capture()
+        (self.root / "recipe/inventory.py").write_text(
+            """
+def write_static_reader(capture_directory, *, output_directory, expected_work_count):
+    (output_directory / "index.html").write_text("ok", encoding="utf-8")
+    (output_directory / "metadata.json").write_text("{}", encoding="utf-8")
+    return {"status": "complete", "summary": {}, "warnings": []}
+""".strip(),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(AnalysisError, "reserved metadata.json"):
+            build_static_reader(
+                load_config(self.config_path),
+                "etcsl-fixture",
+                self.capture,
+            )
+
+        generations = (
+            self.root
+            / f"data/derived/collections/etcsl-fixture/captures/{self.capture_id}/reader-generations"
+        )
+        self.assertEqual(list(generations.iterdir()), [])
+
+    def test_streaming_reader_rejects_hard_link_to_capture(self) -> None:
+        self.create_capture()
+        capture_mode = (self.capture / "capture.json").stat().st_mode
+        (self.root / "recipe/inventory.py").write_text(
+            """
+import os
+
+def write_static_reader(capture_directory, *, output_directory, expected_work_count):
+    (output_directory / "index.html").write_text("ok", encoding="utf-8")
+    os.link(capture_directory / "capture.json", output_directory / "capture.json")
+    return {"status": "complete", "summary": {}, "warnings": []}
+""".strip(),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(AnalysisError, "hard link"):
+            build_static_reader(
+                load_config(self.config_path),
+                "etcsl-fixture",
+                self.capture,
+            )
+
+        self.assertEqual((self.capture / "capture.json").stat().st_mode, capture_mode)
+        self.assertEqual((self.capture / "capture.json").stat().st_nlink, 1)
+
     def test_reader_defaults_to_configured_source_pointer(self) -> None:
         self.create_capture()
         collection_root = self.capture.parent.parent
