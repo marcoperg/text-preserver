@@ -12,6 +12,8 @@ from urllib.parse import urlsplit
 
 import tomllib
 
+from text_preserver.recipes import public_recipe_path
+
 
 SAFE_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$")
 HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -187,7 +189,13 @@ def load_config(path: str | Path) -> Config:
         raise ConfigError("recipes: duplicate recipe path")
     recipe_input_bytes: dict[Path, bytes] = {}
     for value in recipe_values:
-        recipe_path = _resolve_path(value, config_path.parent)
+        if value.startswith("public:"):
+            try:
+                recipe_path = public_recipe_path(value.removeprefix("public:")).resolve()
+            except ValueError as exc:
+                raise ConfigError(f"recipes: {exc}") from exc
+        else:
+            recipe_path = _resolve_path(value, config_path.parent)
         recipe_raw, recipe_bytes = _read_toml(recipe_path, "collection recipe")
         _only_keys(recipe_raw, {"collection"}, f"recipe {recipe_path}")
         label = f"recipe {recipe_path}: collection"

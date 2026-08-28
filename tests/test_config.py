@@ -4,8 +4,11 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
+from text_preserver import recipes
 from text_preserver.config import ConfigError, load_config
+from text_preserver.recipes import public_recipe_path
 
 
 VALID_CONFIG = """
@@ -160,6 +163,31 @@ allowed_hosts = ["example.org"]
         config = load_config(repository_root / "collections.example.toml")
 
         self.assertEqual(config.collections[0].id, "example-corpus")
+        self.assertEqual(config.collections[1].id, "etcsl")
+        self.assertEqual(config.collections[1].recipe_path, public_recipe_path("etcsl"))
+
+    def test_rejects_unsafe_public_recipe_id(self) -> None:
+        config = 'recipes = ["public:../etcsl"]\n\n' + VALID_CONFIG.split(
+            "[[collections]]", 1
+        )[0]
+
+        with self.assertRaisesRegex(ConfigError, "invalid public collection ID"):
+            load_config(self.write_config(config))
+
+    def test_public_recipe_lookup_skips_unrelated_collections_directory(self) -> None:
+        unrelated = self.root / "python/collections"
+        recipe_root = self.root / "share/text-preserver/collections"
+        recipe = recipe_root / "etcsl/collection.toml"
+        unrelated.mkdir(parents=True)
+        recipe.parent.mkdir(parents=True)
+        recipe.write_text("[collection]\n", encoding="utf-8")
+
+        with patch.object(
+            recipes,
+            "_public_collection_roots",
+            return_value=(unrelated, recipe_root),
+        ):
+            self.assertEqual(public_recipe_path("etcsl"), recipe)
 
     def test_loads_collection_recipe_relative_to_configuration(self) -> None:
         recipe = self.root / "recipes/example.toml"

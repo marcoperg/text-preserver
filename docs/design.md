@@ -2,7 +2,7 @@
 
 **Preserve vulnerable digital text collections and the context that makes them intelligible.**
 
-> **Status: early implementation.** Configuration validation, public recipe loading, `doctor`, `collections list/show`, dry-run planning, guarded sequential Wget execution, status and provenance records, SHA-256 finalization, verification, conservative latest-capture pointers, an ETCSL catalogue inventory check, and a localhost integration harness exist. Other command examples in this document describe the target interface unless explicitly marked as implemented.
+> **Status: early implementation.** Configuration validation, installable public recipes, `doctor`, `collections list/show`, guarded Wget capture, fixity verification, conservative latest-capture pointers, ETCSL catalogue/deposit completeness analysis, and a localhost integration harness exist. Other command examples describe the target interface unless explicitly marked as implemented.
 
 `text-preserver` is a preservation-first system for scholarly corpora, digital editions, historical text archives, specialist bibliographies, old academic websites, and other text-centered collections that may become unavailable or difficult to reconstruct.
 
@@ -868,10 +868,10 @@ Configuration should use TOML and distinguish collections from sources.
 A private operator configuration may reference public collection recipes:
 
 ```toml
-recipes = ["collections/etcsl/collection.toml"]
+recipes = ["public:etcsl"]
 ```
 
-Recipe paths are resolved relative to the operator configuration. A recipe contains one `[collection]` table and is validated with the same inheritance and strict-key rules as an inline `[[collections]]` table. Captures preserve both the operator input and selected recipe input.
+`public:ID` references resolve recipes shipped with the source or installed distribution. Filesystem recipe paths are resolved relative to the operator configuration. A recipe contains one `[collection]` table and is validated with the same inheritance and strict-key rules as an inline `[[collections]]` table. Captures preserve the operator input, selected recipe input, and configured recipe-relative analysis assets so later analysis can use the same adapter bytes.
 
 ```toml
 [project]

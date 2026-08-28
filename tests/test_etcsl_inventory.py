@@ -3,7 +3,10 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import sys
+import tempfile
 import unittest
+from unittest.mock import patch
+import zipfile
 
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
@@ -77,6 +80,29 @@ class EtcslInventoryTests(unittest.TestCase):
         collection = next(item for item in config.collections if item.id == "etcsl")
         self.assertEqual(len(collection.sources), 3)
         self.assertEqual(collection.analysis["expected_work_count"], 394)
+
+    def test_rejects_archive_above_entry_count_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "many-entries.zip"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("first", b"")
+                archive.writestr("second", b"")
+
+            with patch.object(inventory, "MAX_ARCHIVE_ENTRIES", 1):
+                with self.assertRaisesRegex(inventory.InventoryError, "entries.*safety limit"):
+                    inventory._analyze_zip(path, 0)
+
+    def test_rejects_xml_kind_in_wrong_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "swapped.zip"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr(
+                    "etcsl/translations/c.1.1.1.xml",
+                    '<TEI.2 id="c.1.1.1"><text /></TEI.2>',
+                )
+
+            with self.assertRaisesRegex(inventory.InventoryError, "does not match directory"):
+                inventory._analyze_zip(path, 1)
 
 
 if __name__ == "__main__":

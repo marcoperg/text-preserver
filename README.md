@@ -2,7 +2,7 @@
 
 **Preserve vulnerable digital text collections and the context that makes them intelligible.**
 
-> **Status: early implementation.** Configuration validation, public collection recipes, diagnostics, dry-run planning, guarded Wget capture, SHA-256 finalization, verification, conservative `LATEST` pointers, and the first ETCSL inventory check are available.
+> **Status: early implementation.** Configuration validation, installable public collection recipes, diagnostics, guarded Wget capture, fixity verification, conservative `LATEST` pointers, and ETCSL catalogue/deposit completeness analysis are available.
 
 `text-preserver` is a local-first system for preserving scholarly corpora, digital editions, historical text archives, specialist bibliographies, and old academic websites that may become unavailable or difficult to reconstruct.
 
@@ -74,7 +74,7 @@ text-preserver collections list --config collections.toml
 text-preserver collections show etcsl --config collections.toml
 ```
 
-The example configuration references the public ETCSL recipe in `collections/etcsl/collection.toml`. Local configuration owns operator identity, storage paths, and capture defaults; recipes own public collection metadata, sources, scope, and analysis settings. Recipe files are resolved relative to the local configuration and preserved with captures for provenance.
+The example configuration references the public ETCSL recipe as `public:etcsl`. Local configuration owns operator identity, storage paths, and capture defaults; recipes own public collection metadata, sources, scope, and analysis settings. Relative recipe paths remain supported. Recipe files are preserved with captures for provenance.
 
 `doctor` validates collection and source structure, rejects unsafe scope and credential-bearing arguments, checks GNU Wget WARC support, checks storage locations, and reports available space. `collections list/show` display the fully resolved configuration without making requests.
 
@@ -96,7 +96,7 @@ text-preserver capture COLLECTION_ID \
   --note "Supervised exploratory capture"
 ```
 
-Execution creates a new capture directory atomically, prevents overlapping captures of the same collection, preserves the input and resolved configuration, records the environment and exact commands, and writes source and collection status records. Failed and interrupted captures remain available for diagnosis. Completed attempts receive `manifest-sha256.json` and `SHA256SUMS`; interrupted attempts remain unfinalized for honest recovery.
+Execution creates a new capture directory atomically, prevents overlapping captures of the same collection, preserves the input and resolved configuration plus configured analysis assets, records the environment and exact commands, and writes source and collection status records. Failed and interrupted captures remain available for diagnosis. Completed attempts receive `manifest-sha256.json` and `SHA256SUMS`; interrupted attempts remain unfinalized for honest recovery.
 
 Verify a finalized capture:
 
@@ -105,6 +105,15 @@ text-preserver verify /path/to/capture
 ```
 
 Verification checks object types, sizes, SHA-256 hashes, missing objects, and unexpected additions. Symlinks are rejected. A complete, verified, unfiltered capture updates the collection's portable `LATEST` pointer; warning, partial, failed, interrupted, and source-filtered captures never do.
+
+Run collection-specific completeness analysis after fixity verification:
+
+```bash
+text-preserver analyze preservation etcsl /path/to/capture \
+  --config collections.toml
+```
+
+Analysis reads the immutable capture and writes `completeness.json` only under `derived/`. It prefers the adapter snapshot preserved with the capture and records the adapter SHA-256; older captures without a snapshot use the current recipe adapter with an explicit warning. The ETCSL adapter compares catalogue IDs with deposited XML filenames, checks ZIP safety and CRCs, performs entity-stubbed XML-shell parsing, verifies root IDs, and reports missing entity and DTD dependencies separately from work-level completeness.
 
 Initial Wget plans ignore ambient proxies and do not follow redirects because Wget's domain filter does not constrain redirect targets. Redirect destinations must be reviewed and configured as explicit seeds until redirect-aware host enforcement is implemented.
 
@@ -124,7 +133,7 @@ ETCSL
 
 The initial milestone is to capture the website and canonical deposit independently, preserve their provenance, verify their bytes, and report whether the expected compositions and representations were captured.
 
-The ETCSL recipe includes a fixture-tested catalogue extractor. A bounded live catalogue check on 2026-08-27 found 394 transliterations and 381 translations; 13 category-0 catalogue compositions are intentionally untranslated. See [`collections/etcsl/README.md`](collections/etcsl/README.md) for scope and usage.
+The ETCSL recipe includes fixture-tested preservation analysis and optional Ciao representation rules. A bounded live catalogue check on 2026-08-27 found 394 transliterations and 381 translations; 13 category-0 catalogue compositions are intentionally untranslated. The canonical deposit has matching work counts, but its text XML relies on undeclared entities and missing ETCSL extension files, which the report records explicitly. See [`collections/etcsl/README.md`](collections/etcsl/README.md) for scope and usage.
 
 [GRETIL](https://gretil.sub.uni-goettingen.de/) is the proposed second collection and generalization test because it adds multiple languages, legacy encodings, TEI migrations, repository lineages, and representation-specific rights.
 

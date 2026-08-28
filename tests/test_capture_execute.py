@@ -60,7 +60,13 @@ class CaptureExecutionTests(unittest.TestCase):
                 os.kill(os.getpid(), signal.SIGTERM)
 
     def test_failed_process_is_preserved_in_status_records(self) -> None:
+        adapter = self.root / "inventory.py"
+        adapter.write_text("def analyze_capture(*args, **kwargs): return {}\n", encoding="utf-8")
         invalid = VALID_CONFIG.replace(
+            "[[collections.sources]]",
+            '[collections.analysis]\ninventory_adapter = "inventory.py"\n\n[[collections.sources]]',
+            1,
+        ).replace(
             'seeds = ["https://example.org/index.html"]',
             'seeds = ["http://127.0.0.1:1/unavailable"]',
         ).replace(
@@ -101,6 +107,10 @@ class CaptureExecutionTests(unittest.TestCase):
         self.assertEqual(
             (result.capture_directory / "metadata/input-config.toml").read_bytes(),
             config.input_bytes,
+        )
+        self.assertEqual(
+            (result.capture_directory / "metadata/recipe-assets/inventory.py").read_bytes(),
+            adapter.read_bytes(),
         )
 
     @patch("text_preserver.capture.execute._run_wget", side_effect=KeyboardInterrupt)

@@ -18,6 +18,7 @@ limit_rate = "250K"
 
 [collection.analysis]
 inventory_adapter = "inventory.py"
+ciao_rules = "rules/preservation.pl"
 expected_work_count = 394
 required_representation_kinds = ["transliteration"]
 
@@ -39,7 +40,7 @@ allowed_hosts = ["etcsl.orinst.ox.ac.uk"]
 recursive = true
 level = 2
 page_requisites = true
-convert_links = true
+convert_links = false
 adjust_extension = true
 quota = "250M"
 

@@ -25,6 +25,13 @@ __pycache__/
 build/
 dist/
 
+# Ciao
+*.po
+*.itf
+*.icert
+*.thm
+*_co.pl
+
 # Local state
 *.log
 .DS_Store

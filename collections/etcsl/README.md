@@ -30,6 +30,16 @@ python collections/etcsl/inventory.py collections/etcsl/fixtures/catalogue.html 
 
 The adapter parses query parameters rather than complete URLs because display parameters and their ordering are presentation details. Identifiers remain strings so leading zeros and alphabetic suffixes are preserved.
 
+`rules/preservation.pl` provides the first optional Ciao completeness rules. It requires a transliteration for every composition and a translation for every composition not listed as intentionally untranslated.
+
+Capture-integrated analysis is available through:
+
+```bash
+text-preserver analyze preservation etcsl /path/to/capture -c collections.toml
+```
+
+The canonical ZIP contains 394 transliteration XML files, 381 translation XML files, and 27 TEI support files. All 775 text XML shells parse when their named entities are safely stubbed, and their root IDs match their filenames. None of the text XML files has a `DOCTYPE`, so all 82 named entities used by those documents are unbound even where similarly named declarations exist elsewhere in the deposit. The reachable `tei2.dtd` support graph also omits `etcsl-extensions.ent`, `etcsl-extensions.dtd`, and conditional TEI modules. The report therefore distinguishes complete work/representation mapping from incomplete XML dependencies.
+
 ## Rights
 
 This public recipe records URLs and technical observations only. It does not grant rights to redistribute captured site or corpus content. Captures and private operator configuration remain outside Git.

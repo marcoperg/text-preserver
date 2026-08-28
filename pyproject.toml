@@ -29,3 +29,21 @@ text-preserver = "text_preserver.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.data-files]
+"share/text-preserver/collections/etcsl" = [
+  "collections/etcsl/README.md",
+  "collections/etcsl/collection.toml",
+  "collections/etcsl/inventory.py",
+]
+"share/text-preserver/collections/etcsl/fixtures" = [
+  "collections/etcsl/fixtures/catalogue.html",
+  "collections/etcsl/fixtures/expected-ids.txt",
+]
+"share/text-preserver/collections/etcsl/seeds" = [
+  "collections/etcsl/seeds/repository.txt",
+  "collections/etcsl/seeds/web.txt",
+]
+"share/text-preserver/collections/etcsl/rules" = [
+  "collections/etcsl/rules/preservation.pl",
+]

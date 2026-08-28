@@ -9,6 +9,7 @@ import sys
 from typing import Mapping, Sequence
 
 from text_preserver import __version__
+from text_preserver.analysis import AnalysisError, analyze_preservation
 from text_preserver.capture import (
     CaptureExecutionError,
     CapturePlanError,
@@ -91,6 +92,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify.add_argument("path", type=Path, help="capture directory or collection with LATEST")
     verify.add_argument("--json", action="store_true", help="emit machine-readable results")
+
+    analyze = subparsers.add_parser("analyze", help="analyze preserved collection content")
+    analyze_commands = analyze.add_subparsers(dest="analyze_command", required=True)
+    preservation = analyze_commands.add_parser(
+        "preservation",
+        help="run collection-specific completeness analysis",
+    )
+    preservation.add_argument("collection_id", help="configured collection ID")
+    preservation.add_argument(
+        "capture_path",
+        nargs="?",
+        type=Path,
+        help="capture directory; defaults to the collection LATEST pointer",
+    )
+    _add_config_argument(preservation)
+    preservation.add_argument("--json", action="store_true", help="emit machine-readable report")
     return parser
 
 
@@ -195,6 +212,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             for error in result.errors:
                 print(f"  {error}")
         return 0 if result.ok else 1
+    if args.command == "analyze" and args.analyze_command == "preservation":
+        try:
+            config = load_config(args.config)
+            result = analyze_preservation(
+                config,
+                args.collection_id,
+                args.capture_path,
+            )
+        except (ConfigError, AnalysisError) as exc:
+            print(f"analysis error: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(result.to_dict(), indent=2))
+        else:
+            print(f"Capture: {result.capture_directory}")
+            print(f"Report: {result.report_path}")
+            print(f"Status: {result.status}")
+            for error in result.report.get("errors", []):
+                print(f"  {error}")
+            for warning in result.report.get("warnings", []):
+                print(f"  warning: {warning}")
+        return 0 if result.status in {"complete", "complete_with_warnings"} else 1
     raise AssertionError(f"unhandled command: {args.command}")
 
 

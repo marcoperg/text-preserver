@@ -196,6 +196,7 @@ def _execute_plan(
             (metadata_root / "input-collection-recipe.toml").write_bytes(
                 config.recipe_input_bytes[collection.recipe_path]
             )
+        _preserve_recipe_assets(config, collection, metadata_root)
         _write_json(
             metadata_root / "environment.json",
             _environment_metadata(wget_version),
@@ -394,6 +395,32 @@ def _source_dict(source: SourceConfig) -> dict[str, Any]:
         "allowed_hosts": list(source.allowed_hosts),
         "capture": _plain(source.capture),
     }
+
+
+def _preserve_recipe_assets(
+    config: Config,
+    collection: CollectionConfig,
+    metadata_root: Path,
+) -> None:
+    base = collection.recipe_path.parent if collection.recipe_path else config.path.parent
+    assets_root = metadata_root / "recipe-assets"
+    for key in ("inventory_adapter", "normalizer", "ciao_rules"):
+        value = collection.analysis.get(key)
+        if not isinstance(value, str):
+            continue
+        relative = Path(value)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise CaptureExecutionError(
+                f"collection {collection.id} analysis asset must be recipe-relative: {value}"
+            )
+        source = (base / relative).resolve()
+        if not source.is_relative_to(base.resolve()) or source.is_symlink() or not source.is_file():
+            raise CaptureExecutionError(
+                f"collection {collection.id} analysis asset is not a regular recipe file: {source}"
+            )
+        target = assets_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
 
 
 def _plain(value: Any) -> Any:

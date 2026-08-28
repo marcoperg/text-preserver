@@ -1,4 +1,4 @@
-recipes = ["collections/etcsl/collection.toml"]
+recipes = ["public:etcsl"]
 
 [project]
 archive_root = "./data/archive"
