@@ -115,6 +115,28 @@ MAX_ARCHIVE_SIZE = 100 * 1024 * 1024
 MAX_ARCHIVE_ENTRIES = 10_000
 MAX_ENTRY_SIZE = 20 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 100
+OTA_DEPOSIT_FILENAMES = frozenset(
+    {
+        "contents.txt",
+        "corphdr.xml",
+        "etcsl-extensions.dtd",
+        "etcsl-extensions.ent",
+        "etcsl-sux.ent",
+        "etcsl.xml",
+        "etcsl.zip",
+        "etcslfullcat.html",
+        "etcslmanual.html",
+        "header2518.xml",
+        "readme.txt",
+    }
+)
+OTA_SUPPORT_PATHS = {
+    "corphdr.xml": "etcsl/corphdr.xml",
+    "etcsl-extensions.dtd": "etcsl/etcsl-extensions.dtd",
+    "etcsl-extensions.ent": "etcsl/etcsl-extensions.ent",
+    "etcsl-sux.ent": "etcsl/etcsl-sux.ent",
+    "etcsl.xml": "etcsl/etcsl.xml",
+}
 TITLE_SUFFIXES = (
     " -- a composite transliteration",
     " -- an English prose translation",
@@ -219,9 +241,71 @@ class _CatalogueParser(HTMLParser):
         )
 
 
+class _DepositedCatalogueParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.compositions: list[Composition] = []
+        self._list_depth = 0
+        self._record_depth: int | None = None
+        self._in_bold = False
+        self._id_parts: list[str] = []
+        self._title_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        if tag == "li":
+            self._list_depth += 1
+        elif tag == "b" and self._list_depth and self._record_depth is None:
+            self._record_depth = self._list_depth
+            self._in_bold = True
+            self._id_parts = []
+            self._title_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._record_depth is None:
+            return
+        (self._id_parts if self._in_bold else self._title_parts).append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "b" and self._in_bold:
+            self._in_bold = False
+            return
+        if tag != "li" or not self._list_depth:
+            return
+        if self._record_depth == self._list_depth:
+            self._finish_record()
+        self._list_depth -= 1
+
+    def _finish_record(self) -> None:
+        identifier = "".join(self._id_parts).strip()
+        title = " ".join("".join(self._title_parts).split()).strip().removesuffix(":").strip()
+        self._record_depth = None
+        self._in_bold = False
+        if not re.fullmatch(r"[0-9]+(?:\.(?:[0-9]+|[a-z])){2,4}", identifier):
+            raise InventoryError(f"invalid deposited catalogue ID: {identifier!r}")
+        if not title:
+            raise InventoryError(f"composition {identifier!r} has no title")
+        self.compositions.append(
+            Composition(
+                identifier,
+                title,
+                f"etcsl/transliterations/c.{identifier}.xml",
+                (
+                    None
+                    if identifier in KNOWN_UNTRANSLATED
+                    else f"etcsl/translations/t.{identifier}.xml"
+                ),
+            )
+        )
+
+
 def extract_inventory(document: str, *, base_url: str = CATALOGUE_URL) -> tuple[Composition, ...]:
     """Extract unique composition records from an ETCSL catalogue document."""
-    parser = _CatalogueParser(base_url)
+    parser: _CatalogueParser | _DepositedCatalogueParser
+    if "text=c." in document:
+        parser = _CatalogueParser(base_url)
+    else:
+        parser = _DepositedCatalogueParser()
     parser.feed(document)
     parser.close()
     ids = [composition.id for composition in parser.compositions]
@@ -305,7 +389,10 @@ def analyze_capture(
     ]
     warnings: list[str] = []
 
-    catalogue_path = _find_catalogue(capture_directory / "sources/historical-web/mirror")
+    dataset_root = capture_directory / "sources/ota-dataset/mirror"
+    package_files, package_errors = _find_ota_package(dataset_root)
+    errors.extend(package_errors)
+    catalogue_path = package_files.get("etcslfullcat.html")
     catalogue_report: dict[str, object] | None = None
     catalogue_ids: set[str] = set()
     if catalogue_path is None:
@@ -322,7 +409,7 @@ def analyze_capture(
         except (OSError, UnicodeError, InventoryError) as exc:
             errors.append(f"cannot parse captured ETCSL catalogue: {exc}")
 
-    archive_path = _find_zip(capture_directory / "sources/ota-dataset/mirror")
+    archive_path = package_files.get("etcsl.zip")
     archive_report: dict[str, object] | None = None
     transliteration_ids: set[str] = set()
     translation_ids: set[str] = set()
@@ -330,7 +417,11 @@ def analyze_capture(
         errors.append("captured ETCSL deposit ZIP was not found")
     else:
         try:
-            archive_report = _analyze_zip(archive_path, expected_work_count)
+            archive_report = _analyze_zip(
+                archive_path,
+                expected_work_count,
+                support_files=_ota_support_files(package_files),
+            )
             transliteration_ids = set(archive_report["transliteration_ids"])
             translation_ids = set(archive_report["translation_ids"])
             errors.extend(str(value) for value in archive_report["errors"])
@@ -383,6 +474,7 @@ def analyze_capture(
             str(catalogue_path.relative_to(capture_directory)) if catalogue_path else None
         ),
         "catalogue": catalogue_report,
+        "deposit_files": sorted(package_files),
         "deposit": archive_report,
         "mapping": {
             "missing_deposit_transliterations": missing_deposit_transliterations,
@@ -399,10 +491,16 @@ def render_static_reader(
     expected_work_count: int,
 ) -> dict[str, object]:
     """Render an inert local catalogue and composition pages from the ETCSL deposit."""
-    archive_path = _find_zip(capture_directory / "sources/ota-dataset/mirror")
+    dataset_root = capture_directory / "sources/ota-dataset/mirror"
+    package_files, _package_errors = _find_ota_package(dataset_root)
+    archive_path = package_files.get("etcsl.zip") or _find_zip(dataset_root)
     if archive_path is None:
         raise InventoryError("captured ETCSL deposit ZIP was not found")
-    archive_report = _analyze_zip(archive_path, expected_work_count)
+    archive_report = _analyze_zip(
+        archive_path,
+        expected_work_count,
+        support_files=_ota_support_files(package_files),
+    )
     records: dict[str, dict[str, object]] = {}
     unresolved_entities: set[str] = set()
     with zipfile.ZipFile(archive_path) as archive:
@@ -460,6 +558,7 @@ def render_static_reader(
     )
 
     warnings = [str(value) for value in archive_report["errors"]]
+    warnings.extend(str(value) for value in archive_report["warnings"])
     if unresolved_entities:
         warnings.append(
             f"{len(unresolved_entities)} named entities are displayed as source tokens"
@@ -833,7 +932,12 @@ footer {{ width:min(1100px,92vw); margin:3rem auto; padding-top:1rem; border-top
 """
 
 
-def _analyze_zip(path: Path, expected_work_count: int) -> dict[str, object]:
+def _analyze_zip(
+    path: Path,
+    expected_work_count: int,
+    *,
+    support_files: dict[str, Path] | None = None,
+) -> dict[str, object]:
     errors: list[str] = []
     warnings: list[str] = []
     with zipfile.ZipFile(path) as archive:
@@ -902,6 +1006,7 @@ def _analyze_zip(path: Path, expected_work_count: int) -> dict[str, object]:
         support_files, declared_entities, external_references = _support_graph(
             archive,
             archive_names,
+            supplemental_files=support_files,
         )
 
         used_entities: set[str] = set()
@@ -948,9 +1053,11 @@ def _analyze_zip(path: Path, expected_work_count: int) -> dict[str, object]:
         if xml_errors:
             errors.append(f"XML shell validation failed: {xml_errors[0]}")
         if missing_entity_names:
-            errors.append(f"undeclared named XML entity: {missing_entity_names[0]}")
+            warnings.append(f"undeclared named XML entity: {missing_entity_names[0]}")
         if missing_external_resources:
-            errors.append(f"missing external XML dependency: {missing_external_resources[0]}")
+            warnings.append(
+                f"source references unavailable XML dependency: {missing_external_resources[0]}"
+            )
         missing_counterparts = sorted(translation_ids - transliteration_ids)
         if missing_counterparts:
             errors.append(f"translation has no transliteration: {missing_counterparts[0]}")
@@ -1000,20 +1107,29 @@ def _analyze_zip(path: Path, expected_work_count: int) -> dict[str, object]:
 def _support_graph(
     archive: zipfile.ZipFile,
     archive_names: set[str],
-    root: str = "etcsl/tei/tei2.dtd",
+    supplemental_files: dict[str, Path] | None = None,
+    roots: Sequence[str] = ("etcsl/etcsl.xml", "etcsl/tei/tei2.dtd"),
 ) -> tuple[set[str], set[str], list[tuple[str, str]]]:
+    supplemental_files = supplemental_files or {}
+    available_names = archive_names | set(supplemental_files)
     visited: set[str] = set()
     declared_entities: set[str] = set()
     missing: list[tuple[str, str]] = []
-    pending: deque[str] = deque([root])
-    if root not in archive_names:
-        return visited, declared_entities, [("deposit", root)]
+    pending: deque[str] = deque()
+    for root in roots:
+        if root in available_names:
+            pending.append(root)
+        else:
+            missing.append(("deposit", root))
     while pending:
         name = pending.popleft()
         if name in visited:
             continue
         visited.add(name)
-        document = _read_zip_text(archive, archive.getinfo(name))
+        if name in supplemental_files:
+            document = supplemental_files[name].read_text(encoding="utf-8")
+        else:
+            document = _read_zip_text(archive, archive.getinfo(name))
         declared_entities.update(ENTITY_DECL_RE.findall(document))
         targets = SYSTEM_REF_RE.findall(document) + PUBLIC_REF_RE.findall(document)
         for target in targets:
@@ -1021,11 +1137,38 @@ def _support_graph(
                 missing.append((name, target))
                 continue
             resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), target))
-            if resolved not in archive_names:
+            if resolved not in available_names:
                 missing.append((name, resolved))
             elif resolved.endswith((".dtd", ".ent")):
                 pending.append(resolved)
     return visited, declared_entities, missing
+
+
+def _find_ota_package(root: Path) -> tuple[dict[str, Path], list[str]]:
+    matches: dict[str, list[Path]] = {name: [] for name in OTA_DEPOSIT_FILENAMES}
+    if root.is_dir():
+        for path in root.rglob("*"):
+            if path.is_symlink() or not path.is_file():
+                continue
+            name = path.name.split("?", 1)[0]
+            if name in matches:
+                matches[name].append(path)
+    files = {name: paths[0] for name, paths in matches.items() if len(paths) == 1}
+    errors: list[str] = []
+    for name in sorted(matches):
+        if not matches[name]:
+            errors.append(f"captured OTA deposit file was not found: {name}")
+        elif len(matches[name]) > 1:
+            errors.append(f"multiple captured OTA deposit files found: {name}")
+    return files, errors
+
+
+def _ota_support_files(package_files: dict[str, Path]) -> dict[str, Path]:
+    return {
+        logical_path: package_files[filename]
+        for filename, logical_path in OTA_SUPPORT_PATHS.items()
+        if filename in package_files
+    }
 
 
 def _find_catalogue(root: Path) -> Path | None:

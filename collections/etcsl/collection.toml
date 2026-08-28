@@ -24,28 +24,6 @@ expected_work_count = 394
 required_representation_kinds = ["transliteration"]
 
 [[collection.sources]]
-id = "historical-web"
-kind = "web"
-title = "Historical ETCSL website and catalogue"
-description = "Project documentation, complete catalogue, translations, transliterations, bibliography, and supporting assets."
-required = true
-seeds = [
-  "https://etcsl.orinst.ox.ac.uk/",
-  "https://etcsl.orinst.ox.ac.uk/edition2/etcslsitemap.html",
-  "https://etcsl.orinst.ox.ac.uk/edition2/etcslmanual.php",
-  "https://etcsl.orinst.ox.ac.uk/cgi-bin/etcsl.cgi?text=all",
-]
-allowed_hosts = ["etcsl.orinst.ox.ac.uk"]
-
-[collection.sources.capture]
-recursive = true
-level = 2
-page_requisites = true
-convert_links = false
-adjust_extension = true
-quota = "250M"
-
-[[collection.sources]]
 id = "ota-record"
 kind = "web"
 title = "Oxford Text Archive repository record"
@@ -66,11 +44,21 @@ quota = "10M"
 [[collection.sources]]
 id = "ota-dataset"
 kind = "http-file"
-title = "Canonical ETCSL XML deposit"
-description = "ZIP archive of the XML source corpus deposited with the Oxford Text Archive."
+title = "Complete ETCSL Oxford Text Archive deposit"
+description = "The eleven files advertised for OTA deposit 2518, including the XML corpus, catalogue, documentation, metadata, and support declarations."
 required = true
 seeds = [
+  "https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/contents.txt?sequence=3&isAllowed=y",
+  "https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/corphdr.xml?sequence=4&isAllowed=y",
+  "https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/etcsl-extensions.dtd?sequence=5&isAllowed=y",
+  "https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/etcsl-extensions.ent?sequence=6&isAllowed=y",
+  "https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/etcslfullcat.html?sequence=7&isAllowed=y",
+  "https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/etcslmanual.html?sequence=8&isAllowed=y",
+  "https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/etcsl-sux.ent?sequence=9&isAllowed=y",
+  "https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/etcsl.xml?sequence=10&isAllowed=y",
   "https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/etcsl.zip?sequence=11&isAllowed=y",
+  "https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/header2518.xml?sequence=12&isAllowed=y",
+  "https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/readme.txt?sequence=13&isAllowed=y",
 ]
 allowed_hosts = ["ota.bodleian.ox.ac.uk"]
 

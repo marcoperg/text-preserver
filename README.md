@@ -146,17 +146,17 @@ ETCSL demonstrates why a collection is not equivalent to one website:
 
 ```text
 ETCSL
-|-- historical website and catalogue
+|-- Oxford Text Archive record
+|-- deposited catalogue and documentation
 |-- translations and transliterations
-|-- project documentation
-`-- canonical XML corpus deposit
+`-- canonical XML corpus and support files
 ```
 
-The initial milestone is to capture the website and canonical deposit independently, preserve their provenance, verify their bytes, and report whether the expected compositions and representations were captured.
+The current milestone preserves the complete Oxford Text Archive deposit and its repository record. The historical website interface, search, and CGI behavior are explicitly deferred and are not part of the active completeness boundary.
 
-The ETCSL recipe includes fixture-tested preservation analysis, a derived static reader, and optional Ciao representation rules. A bounded live catalogue check on 2026-08-27 found 394 transliterations and 381 translations; 13 category-0 catalogue compositions are intentionally untranslated. The canonical deposit has matching work counts, but its text XML relies on undeclared entities and missing ETCSL extension files, which the report records explicitly. See [`collections/etcsl/README.md`](collections/etcsl/README.md) for scope and usage.
+The ETCSL recipe includes fixture-tested preservation analysis, a derived static reader, and optional Ciao representation rules. The deposited catalogue and canonical corpus contain 394 transliterations and 381 translations; 13 category-0 catalogue compositions are intentionally untranslated. Sibling deposit files supply the ETCSL entity and extension declarations omitted from the inner ZIP, while source-authored XML limitations remain explicit warnings. See [`collections/etcsl/README.md`](collections/etcsl/README.md) for scope and usage.
 
-[GRETIL](https://gretil.sub.uni-goettingen.de/) is the second collection and generalization test. Its recipe separates the current register, eight cumulative corpus packages, 21 separately published dictionaries, and frozen Unicode/CSX/REE documentation. Fixture-backed analysis pins the 801-identifier TEI inventory, checks published representation lineages and exact package sets, and validates ZIP safety and CRCs without extraction. Its derived reader renders the complete reviewed TEI corpus one record at a time, preserving item-level rights, source descriptions, mixed content, apparatus, and package provenance. The remaining direct corpus, legacy encoded payloads, and repository migrations are staged follow-up work; OPAC/eDocs crawling is excluded by their robots policy. See [`collections/gretil/README.md`](collections/gretil/README.md).
+[GRETIL](https://gretil.sub.uni-goettingen.de/) is the second collection and generalization test. Its recipe separates the current register, eight cumulative corpus packages, 21 separately published dictionaries, and frozen Unicode/CSX/REE documentation; all four reviewed source groups now have verified local captures. Fixture-backed analysis pins the 801-identifier TEI inventory, checks published representation lineages and exact package sets, and validates ZIP safety and CRCs without extraction. Its derived reader renders the complete reviewed TEI corpus one record at a time, preserving item-level rights, source descriptions, mixed content, apparatus, and package provenance. The remaining direct corpus, legacy encoded payloads, historical interfaces, and repository migrations are staged follow-up work; OPAC/eDocs crawling is excluded by their robots policy. See [`collections/gretil/README.md`](collections/gretil/README.md).
 
 ## Principles
 

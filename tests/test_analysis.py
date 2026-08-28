@@ -46,10 +46,10 @@ expected_work_count = 4
 required_representation_kinds = ["transliteration"]
 
 [[collection.sources]]
-id = "historical-web"
+id = "ota-record"
 kind = "web"
-title = "Website"
-seeds = ["https://example.org/catalogue"]
+title = "Repository record"
+seeds = ["https://example.org/record"]
 allowed_hosts = ["example.org"]
 
 [[collection.sources]]
@@ -96,9 +96,9 @@ user_agent = "text-preserver-test/1.0"
         metadata_capture_id: str | None = None,
         adapter_source: str | None = None,
     ) -> None:
-        web = self.capture / "sources/historical-web/mirror"
+        record = self.capture / "sources/ota-record/mirror"
         dataset = self.capture / "sources/ota-dataset/mirror"
-        web.mkdir(parents=True)
+        record.mkdir(parents=True)
         dataset.mkdir(parents=True)
         recipe_assets = self.capture / "metadata/recipe-assets"
         recipe_assets.mkdir(parents=True)
@@ -106,7 +106,22 @@ user_agent = "text-preserver-test/1.0"
             shutil.copyfile(ETCSL_RECIPE / "inventory.py", recipe_assets / "inventory.py")
         else:
             (recipe_assets / "inventory.py").write_text(adapter_source, encoding="utf-8")
-        shutil.copyfile(ETCSL_RECIPE / "fixtures/catalogue.html", web / "catalogue.html")
+        shutil.copyfile(
+            ETCSL_RECIPE / "fixtures/catalogue.html",
+            dataset / "etcslfullcat.html",
+        )
+        for name in (
+            "contents.txt",
+            "corphdr.xml",
+            "etcsl-extensions.dtd",
+            "etcsl-extensions.ent",
+            "etcsl-sux.ent",
+            "etcsl.xml",
+            "etcslmanual.html",
+            "header2518.xml",
+            "readme.txt",
+        ):
+            (dataset / name).write_text("", encoding="utf-8")
         ids = ["0.1.1", "1.8.1.5.1", "2.4.1.a", "4.03.1"]
         with zipfile.ZipFile(dataset / "etcsl.zip", "w", zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("etcsl/tei/tei2.dtd", "")
@@ -129,7 +144,7 @@ user_agent = "text-preserver-test/1.0"
                     "collection_id": "etcsl-fixture",
                     "status": "complete",
                     "sources": [
-                        {"source_id": "historical-web", "status": "complete"},
+                        {"source_id": "ota-record", "status": "complete"},
                         {"source_id": "ota-dataset", "status": "complete"},
                     ],
                 }

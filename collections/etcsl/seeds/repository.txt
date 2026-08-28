@@ -1,2 +1,12 @@
 https://ota.bodleian.ox.ac.uk/repository/xmlui/handle/20.500.12024/2518
+https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/contents.txt?sequence=3&isAllowed=y
+https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/corphdr.xml?sequence=4&isAllowed=y
+https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/etcsl-extensions.dtd?sequence=5&isAllowed=y
+https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/etcsl-extensions.ent?sequence=6&isAllowed=y
+https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/etcslfullcat.html?sequence=7&isAllowed=y
+https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/etcslmanual.html?sequence=8&isAllowed=y
+https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/etcsl-sux.ent?sequence=9&isAllowed=y
+https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/etcsl.xml?sequence=10&isAllowed=y
 https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/etcsl.zip?sequence=11&isAllowed=y
+https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/header2518.xml?sequence=12&isAllowed=y
+https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2518/readme.txt?sequence=13&isAllowed=y

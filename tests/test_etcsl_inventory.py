@@ -47,6 +47,25 @@ class EtcslInventoryTests(unittest.TestCase):
         self.assertEqual(report["translation_count"], 3)
         self.assertEqual(report["errors"], [])
 
+    def test_extracts_nested_deposited_catalogue_records(self) -> None:
+        document = """
+<ul><li>Category<ul>
+<li><b>0.1.1</b> Untranslated record</li>
+<li><b>1.8.1.1</b> Gilgame&#x0161; and <i>Aga</i></li>
+<li>1.8.1.9 Unedited record</li>
+</ul></li></ul>
+""".strip()
+
+        compositions = inventory.extract_inventory(document)
+
+        self.assertEqual([item.id for item in compositions], ["0.1.1", "1.8.1.1"])
+        self.assertEqual(compositions[1].title, "Gilgameš and Aga")
+        self.assertIsNone(compositions[0].translation_url)
+        self.assertEqual(
+            compositions[1].transliteration_url,
+            "etcsl/transliterations/c.1.8.1.1.xml",
+        )
+
     def test_reports_missing_required_translation(self) -> None:
         document = self.document.replace(
             "<a href='etcsl.cgi?text=t.2.4.1.a'>translation</a>",
@@ -78,8 +97,58 @@ class EtcslInventoryTests(unittest.TestCase):
         config_path = REPOSITORY_ROOT / "collections.example.toml"
         config = load_config(config_path)
         collection = next(item for item in config.collections if item.id == "etcsl")
-        self.assertEqual(len(collection.sources), 3)
+        self.assertEqual(len(collection.sources), 2)
+        dataset = next(item for item in collection.sources if item.id == "ota-dataset")
+        self.assertEqual(len(dataset.seeds), 11)
+        self.assertTrue(any("etcsl.zip?sequence=11" in seed for seed in dataset.seeds))
+        self.assertFalse(any(seed.endswith("/allzip") for seed in dataset.seeds))
         self.assertEqual(collection.analysis["expected_work_count"], 394)
+
+    def test_finds_complete_ota_package_with_query_suffixed_names(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for position, name in enumerate(sorted(inventory.OTA_DEPOSIT_FILENAMES), 1):
+                (root / f"{name}?sequence={position}&isAllowed=y").write_bytes(b"fixture")
+
+            files, errors = inventory._find_ota_package(root)
+
+            self.assertEqual(set(files), inventory.OTA_DEPOSIT_FILENAMES)
+            self.assertEqual(errors, [])
+
+            files["readme.txt"].unlink()
+            _files, errors = inventory._find_ota_package(root)
+            self.assertIn("captured OTA deposit file was not found: readme.txt", errors)
+
+    def test_support_graph_uses_sibling_ota_declarations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive_path = root / "etcsl.zip"
+            extension = root / "etcsl-extensions.dtd"
+            entities = root / "etcsl-sux.ent"
+            extension.write_text(
+                '<!ENTITY c "&#x0161;">\n<!ENTITY % sux SYSTEM "etcsl-sux.ent">\n%sux;',
+                encoding="utf-8",
+            )
+            entities.write_text('<!ENTITY C "&#x0160;">', encoding="utf-8")
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr(
+                    "etcsl/tei/tei2.dtd",
+                    '<!ENTITY % ext SYSTEM "../etcsl-extensions.dtd">\n%ext;',
+                )
+            with zipfile.ZipFile(archive_path) as archive:
+                visited, declared, missing = inventory._support_graph(
+                    archive,
+                    set(archive.namelist()),
+                    supplemental_files={
+                        "etcsl/etcsl-extensions.dtd": extension,
+                        "etcsl/etcsl-sux.ent": entities,
+                    },
+                    roots=("etcsl/tei/tei2.dtd",),
+                )
+
+            self.assertEqual(missing, [])
+            self.assertEqual(declared, {"C", "c"})
+            self.assertIn("etcsl/etcsl-sux.ent", visited)
 
     def test_rejects_archive_above_entry_count_limit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

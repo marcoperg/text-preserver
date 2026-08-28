@@ -1,18 +1,17 @@
 # ETCSL collection recipe
 
-This recipe preserves the Electronic Text Corpus of Sumerian Literature as three independently auditable sources:
+This recipe preserves the Electronic Text Corpus of Sumerian Literature as two independently auditable Oxford Text Archive sources:
 
-- `historical-web`: the project site, complete CGI catalogue, manual, translations, and transliterations;
 - `ota-record`: the Oxford Text Archive repository metadata;
-- `ota-dataset`: the canonical 4.9 MB XML corpus ZIP.
+- `ota-dataset`: all eleven files advertised for deposit 2518, including the canonical 4.9 MB XML corpus ZIP, catalogue, manual, corpus metadata, and XML support declarations.
 
-The known endpoints returned direct HTTP `200` responses when reviewed on 2026-08-27. Capture still disables redirects. If an endpoint begins redirecting, review the destination and update the explicit seed rather than enabling unrestricted redirect following.
+The historical CGI website and its interface are explicitly deferred. Its failed 2026-08-28 capture remains preserved as evidence, but it is not part of the current executable completeness boundary. The deposited catalogue, manual, source XML, and metadata preserve the textual and interpretive content needed for this milestone; historical presentation, search, and CGI behavior may be revisited separately.
 
-The historical web capture is intentionally bounded to recursion depth 2, the exact host, a 250 MiB quota, a 250 KiB/s rate, two attempts, and randomized waits. Review `text-preserver capture etcsl --source historical-web --dry-run` before a supervised capture.
+Capture disables redirects. If an endpoint begins redirecting, review the destination and update the explicit seed rather than enabling unrestricted redirect following.
 
 ## Inventory
 
-The complete catalogue at `?text=all` contains 394 unique transliteration records and 381 translation records. Thirteen category-0 catalogue compositions intentionally have no translation:
+The deposited `etcslfullcat.html` catalogue contains 394 unique transliteration records and 381 translation records. Thirteen category-0 catalogue compositions intentionally have no translation:
 
 ```text
 0.1.1 0.1.2
@@ -28,7 +27,7 @@ python collections/etcsl/inventory.py collections/etcsl/fixtures/catalogue.html 
   --known-untranslated 0.1.1
 ```
 
-The adapter parses query parameters rather than complete URLs because display parameters and their ordering are presentation details. Identifiers remain strings so leading zeros and alphabetic suffixes are preserved.
+The adapter supports both the historical link-based catalogue and the deposited nested catalogue, where bold identifiers distinguish included compositions from unedited entries. Identifiers remain strings so leading zeros and alphabetic suffixes are preserved.
 
 `rules/preservation.pl` provides the first optional Ciao completeness rules. It requires a transliteration for every composition and a translation for every composition not listed as intentionally untranslated.
 
@@ -38,7 +37,7 @@ Capture-integrated analysis is available through:
 text-preserver analyze preservation etcsl /path/to/capture -c collections.toml
 ```
 
-The canonical ZIP contains 394 transliteration XML files, 381 translation XML files, and 27 TEI support files. All 775 text XML shells parse when their named entities are safely stubbed, and their root IDs match their filenames. None of the text XML files has a `DOCTYPE`, so all 82 named entities used by those documents are unbound even where similarly named declarations exist elsewhere in the deposit. The reachable `tei2.dtd` support graph also omits `etcsl-extensions.ent`, `etcsl-extensions.dtd`, and conditional TEI modules. The report therefore distinguishes complete work/representation mapping from incomplete XML dependencies.
+The canonical ZIP contains 394 transliteration XML files, 381 translation XML files, and 27 TEI support files. All 775 text XML shells parse when their named entities are safely stubbed, and their root IDs match their filenames. The three ETCSL support declarations omitted from the inner ZIP are captured as sibling deposit files and included in dependency analysis. The source text files still omit `DOCTYPE` declarations, and historical support files retain stale references to unpublished texts and optional TEI modules; those source-authored defects are reported as warnings rather than missing deposit objects.
 
 ## Static reader
 
@@ -53,7 +52,7 @@ The recipe's `reader_source = "ota-dataset"` setting resolves the capture throug
 
 This first reader is not a replica of the historical ETCSL website. It omits bibliography linking and advanced stand-off annotations. ETCSL-specific letters, subscripts, editorial signs, determinatives, and horizontal rulings are decoded before standard HTML entities. This precedence matters because ETCSL's `&aleph;` and `&mu;` names otherwise collide with unrelated HTML entities. Determinatives are shown as semantic superscripts, while any genuinely unknown name remains visible as its source token.
 
-The mapping is based on `etcsl-sux.ent` from the official OTA all-files package at `https://ota.bodleian.ox.ac.uk/repository/xmlui/handle/20.500.12024/2518/allzip`. That package also contains `etcsl-extensions.dtd` and `etcsl-extensions.ent`; the inner `etcsl.zip` captured as the canonical text payload omits all three files. The entity file's character descriptions are corroborated by the historical ETCSL CGI's Unicode rendering. The output records capture, manifest, configuration, recipe, renderer, and canonical archive hashes.
+The mapping is based on the separately deposited `etcsl-sux.ent`; the sibling `etcsl-extensions.dtd` and `etcsl-extensions.ent` files complete the ETCSL-specific support set omitted from the inner ZIP. The entity file's character descriptions are corroborated by preserved ETCSL-derived material. The output records capture, manifest, configuration, recipe, renderer, and canonical archive hashes.
 
 ## Rights
 

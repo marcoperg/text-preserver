@@ -39,6 +39,8 @@ text-preserver capture gretil --source frozen-register -c collections.toml --dry
 
 The static origin is limited to one request stream, randomized one-second waits, two attempts, a 2 MiB/s rate limit, explicit URLs, disabled redirects, and source-specific quotas. The seed files are documentary copies; `collection.toml` remains the executable source of capture scope.
 
+As of 2026-08-28, verified local captures exist for all four reviewed source groups: the current register and bulk packages together, plus separate dictionary and frozen-register captures. The latter sources were captured separately to avoid downloading the unchanged 392.5 MiB package set solely to produce an aggregate report. Source-specific `LATEST-*` pointers identify each preserved group; the current framework does not yet combine immutable source captures into one collection-level completeness report.
+
 Run completeness analysis on a verified full capture with:
 
 ```bash
@@ -74,4 +76,5 @@ There is no defensible collection-wide redistribution licence. Sampled TEI files
 - Capture legacy CSX and REE payloads from the frozen indexes as opaque bytes.
 - Map legacy files to TEI and generated HTML without conflating versions.
 - Review TextGrid and DARIAH-DE repository lineages separately.
+- Revisit historical interface preservation separately from the textual-data boundary.
 - Add full-text search and stable passage-level anchors without weakening source traceability.
