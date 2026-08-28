@@ -1288,9 +1288,9 @@ GRETIL is no longer an example of a wholly abandoned resource: its migration int
 
 ### Sacred Texts and later candidates
 
-The [Internet Sacred Text Archive](https://www.sacred-texts.com/) remains a strong later target because of its scale, historical interface, broad collection, and mixture of public-domain source texts with potentially distinct rights in translations, introductions, scans, organization, and site assets.
+The [Internet Sacred Text Archive](https://www.sacred-texts.com/) is the third collection because of its scale, historical interface, broad collection, and mixture of public-domain source texts with potentially distinct rights in translations, introductions, scans, organization, and site assets.
 
-It should follow ETCSL and the first GRETIL subcollection because it presents a larger scope and rights-review problem.
+The first bounded milestone preserves a complete 2021 Internet Archive item containing a 1.33 GB WARC and 154,080 indexed records. Comprehensive live capture remains deferred pending written permission under ISTA's robot terms and Cloudflare allowlisting.
 
 Other useful future test collections include:
 

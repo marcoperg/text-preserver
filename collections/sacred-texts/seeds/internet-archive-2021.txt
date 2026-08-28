@@ -1,0 +1,9 @@
+https://archive.org/metadata/sacred_texts_com_2021_10_09
+https://dn904709.us.archive.org/0/items/sacred_texts_com_2021_10_09/sacred_texts_com_2021_10_09.cdx.gz
+https://dn904709.us.archive.org/0/items/sacred_texts_com_2021_10_09/sacred_texts_com_2021_10_09.cdx.idx
+https://dn904709.us.archive.org/0/items/sacred_texts_com_2021_10_09/sacred_texts_com_2021_10_09_archive.torrent
+https://dn904709.us.archive.org/0/items/sacred_texts_com_2021_10_09/sacred_texts_com_2021_10_09_files.xml
+https://dn904709.us.archive.org/0/items/sacred_texts_com_2021_10_09/sacred_texts_com_2021_10_09_meta.sqlite
+https://dn904709.us.archive.org/0/items/sacred_texts_com_2021_10_09/sacred_texts_com_2021_10_09_meta.xml
+https://dn904709.us.archive.org/0/items/sacred_texts_com_2021_10_09/sappho.warc.gz
+https://dn904709.us.archive.org/0/items/sacred_texts_com_2021_10_09/sappho.warc.os.cdx.gz

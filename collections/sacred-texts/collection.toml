@@ -1,0 +1,49 @@
+[collection]
+id = "sacred-texts"
+title = "Internet Sacred Text Archive"
+homepage = "https://sacred-texts.com/"
+description = "A large multilingual archive of texts on religion, mythology, folklore, and esoteric traditions."
+risk_note = "The corpus is large, historically maintained, rights-heterogeneous, and currently protected by terms and Cloudflare controls that prevent an authorized unattended live crawl."
+rights_note = "Rights vary by work, transcription, image, and site-authored context; preserve notices and do not infer a collection-wide public-domain status."
+tags = ["religion", "mythology", "folklore", "digital-library", "warc"]
+enabled = true
+
+[collection.capture]
+wait = 0.5
+random_wait = true
+timeout = 120
+tries = 2
+quota = "2G"
+limit_rate = "8M"
+
+[collection.analysis]
+inventory_adapter = "inventory.py"
+expected_work_count = 154080
+required_representation_kinds = ["warc-record"]
+
+[[collection.sources]]
+id = "internet-archive-2021"
+kind = "http-file"
+title = "Internet Archive Sacred Texts snapshot from 2021-10-09"
+description = "The complete eight-file Internet Archive item, including its 1.33 GB WARC, two CDX indexes, metadata files, torrent, and the item metadata API response."
+required = true
+seeds = [
+  "https://archive.org/metadata/sacred_texts_com_2021_10_09",
+  "https://dn904709.us.archive.org/0/items/sacred_texts_com_2021_10_09/sacred_texts_com_2021_10_09.cdx.gz",
+  "https://dn904709.us.archive.org/0/items/sacred_texts_com_2021_10_09/sacred_texts_com_2021_10_09.cdx.idx",
+  "https://dn904709.us.archive.org/0/items/sacred_texts_com_2021_10_09/sacred_texts_com_2021_10_09_archive.torrent",
+  "https://dn904709.us.archive.org/0/items/sacred_texts_com_2021_10_09/sacred_texts_com_2021_10_09_files.xml",
+  "https://dn904709.us.archive.org/0/items/sacred_texts_com_2021_10_09/sacred_texts_com_2021_10_09_meta.sqlite",
+  "https://dn904709.us.archive.org/0/items/sacred_texts_com_2021_10_09/sacred_texts_com_2021_10_09_meta.xml",
+  "https://dn904709.us.archive.org/0/items/sacred_texts_com_2021_10_09/sappho.warc.gz",
+  "https://dn904709.us.archive.org/0/items/sacred_texts_com_2021_10_09/sappho.warc.os.cdx.gz",
+]
+allowed_hosts = ["archive.org", "dn904709.us.archive.org"]
+
+[collection.sources.capture]
+recursive = false
+page_requisites = false
+convert_links = false
+adjust_extension = false
+warc_max_size = "2G"
+quota = "2G"

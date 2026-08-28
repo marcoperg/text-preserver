@@ -158,6 +158,8 @@ The ETCSL recipe includes fixture-tested preservation analysis, a derived static
 
 [GRETIL](https://gretil.sub.uni-goettingen.de/) is the second collection and generalization test. Its recipe separates the current register, eight cumulative corpus packages, 21 separately published dictionaries, and frozen Unicode/CSX/REE documentation; all four reviewed source groups now have verified local captures. Fixture-backed analysis pins the 801-identifier TEI inventory, checks published representation lineages and exact package sets, and validates ZIP safety and CRCs without extraction. Its derived reader renders the complete reviewed TEI corpus one record at a time, preserving item-level rights, source descriptions, mixed content, apparatus, and package provenance. The remaining direct corpus, legacy encoded payloads, historical interfaces, and repository migrations are staged follow-up work; OPAC/eDocs crawling is excluded by their robots policy. See [`collections/gretil/README.md`](collections/gretil/README.md).
 
+The [Internet Sacred Text Archive](https://sacred-texts.com/) is the third collection and scale test. Its first bounded source preserves the complete eight-file 2021 Internet Archive item, including a 1.33 GB WARC and indexes covering 154,080 records. A comprehensive current-site crawl is deferred because ISTA's terms do not authorize preservation robots and Cloudflare challenges GNU Wget; the project will not bypass either control. The historical snapshot is therefore a verified baseline, not a claim of current-site completeness. See [`collections/sacred-texts/README.md`](collections/sacred-texts/README.md).
+
 ## Principles
 
 - Preserve original bytes and derive everything else.

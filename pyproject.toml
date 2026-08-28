@@ -63,3 +63,11 @@ where = ["src"]
   "collections/gretil/seeds/dictionaries.txt",
   "collections/gretil/seeds/frozen-register.txt",
 ]
+"share/text-preserver/collections/sacred-texts" = [
+  "collections/sacred-texts/README.md",
+  "collections/sacred-texts/collection.toml",
+  "collections/sacred-texts/inventory.py",
+]
+"share/text-preserver/collections/sacred-texts/seeds" = [
+  "collections/sacred-texts/seeds/internet-archive-2021.txt",
+]
