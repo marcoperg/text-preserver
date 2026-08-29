@@ -148,6 +148,16 @@ allowed_hosts = ["127.0.0.1"]
         )
         return result, command.working_directory
 
+    def capture_diagnostics(self, capture: object) -> str:
+        capture_directory = getattr(capture, "capture_directory")
+        metadata = getattr(capture, "metadata")
+        log_path = capture_directory / "sources/web/logs/wget.log"
+        try:
+            log = log_path.read_text(encoding="utf-8", errors="replace")[-8_192:]
+        except OSError as exc:
+            log = f"<cannot read {log_path}: {exc}>"
+        return f"source={metadata['sources'][0]!r}\nwget.log:\n{log}"
+
     def test_recursive_plan_creates_mirror_warc_cdx_and_log(self) -> None:
         config = load_config(self.write_config("/index.html"))
         capture = execute_capture(
@@ -158,7 +168,7 @@ allowed_hosts = ["127.0.0.1"]
         )
         source_root = capture.capture_directory / "sources/web"
 
-        self.assertEqual(capture.status, "complete")
+        self.assertEqual(capture.status, "complete", self.capture_diagnostics(capture))
         self.assertIn("/index.html", self.requests)
         self.assertIn("/child.html", self.requests)
         self.assertIn("/style.css", self.requests)
@@ -215,7 +225,7 @@ allowed_hosts = ["127.0.0.1"]
 
         source = capture.metadata["sources"][0]
         warc = source["payloads"]["warc"]
-        self.assertEqual(capture.status, "complete")
+        self.assertEqual(capture.status, "complete", self.capture_diagnostics(capture))
         self.assertEqual(source["payloads"]["mirror"], {"files": 0, "bytes": 0})
         self.assertEqual(source["downloaded_files"], 0)
         self.assertEqual(source["downloaded_bytes"], 0)
@@ -235,7 +245,7 @@ allowed_hosts = ["127.0.0.1"]
             capture_id="20260827T120000Z-b2c3d4",
         )
 
-        self.assertEqual(capture.status, "complete")
+        self.assertEqual(capture.status, "complete", self.capture_diagnostics(capture))
         self.assertFalse(capture.latest_updated)
         self.assertFalse((capture.capture_directory.parent.parent / "LATEST").exists())
         source_latest = capture.capture_directory.parent.parent / "LATEST-web"
@@ -245,10 +255,16 @@ allowed_hosts = ["127.0.0.1"]
         )
 
     def test_plan_does_not_follow_redirects(self) -> None:
-        result, _source_root = self.execute_plan("/redirect")
+        result, source_root = self.execute_plan("/redirect")
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("/redirect", self.requests)
+        log_path = source_root / "logs/wget.log"
+        log = log_path.read_text(encoding="utf-8", errors="replace")[-8_192:]
+        self.assertIn(
+            "/redirect",
+            self.requests,
+            f"returncode={result.returncode}; stderr={result.stderr!r}; wget.log:\n{log}",
+        )
         self.assertNotIn("/redirect-target", self.requests)
 
 
