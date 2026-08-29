@@ -4,8 +4,11 @@
   "title": "text-preserver collection recipe",
   "type": "object",
   "additionalProperties": false,
-  "required": ["collection"],
+  "required": ["recipe_api", "collection"],
   "properties": {
+    "recipe_api": {
+      "const": 1
+    },
     "collection": {
       "$ref": "config.schema.json#/$defs/collection"
     }

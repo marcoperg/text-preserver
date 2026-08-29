@@ -1,3 +1,5 @@
+recipe_api = 1
+
 [collection]
 id = "etcsl"
 title = "Electronic Text Corpus of Sumerian Literature"

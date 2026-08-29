@@ -1,3 +1,5 @@
+recipe_api = 1
+
 [collection]
 id = "gretil"
 title = "GRETIL - Goettingen Register of Electronic Texts in Indian Languages"

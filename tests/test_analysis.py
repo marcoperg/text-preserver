@@ -19,6 +19,7 @@ from text_preserver.analysis import (
 from text_preserver.cli import main
 from text_preserver.config import load_config
 from text_preserver.manifest import finalize_capture, verify_capture
+from text_preserver.recipe_bundle import copy_bundle, scan_recipe_directory
 
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
@@ -35,6 +36,8 @@ class PreservationAnalysisTests(unittest.TestCase):
         shutil.copyfile(ETCSL_RECIPE / "inventory.py", recipe_root / "inventory.py")
         (recipe_root / "collection.toml").write_text(
             """
+recipe_api = 1
+
 [collection]
 id = "etcsl-fixture"
 title = "ETCSL Fixture"
@@ -99,18 +102,36 @@ user_agent = "text-preserver-test/1.0"
         source_ids: tuple[str, ...] = ("ota-record", "ota-dataset"),
         source_statuses: dict[str, str] | None = None,
         collection_id: str = "etcsl-fixture",
+        legacy_recipe_assets: bool = False,
+        malformed_bundle_manifest: bool = False,
     ) -> Path:
         actual_capture_id = capture_id or self.capture_id
         capture = self.capture.parent / actual_capture_id
         for source_id in source_ids:
             (capture / f"sources/{source_id}/mirror").mkdir(parents=True)
         dataset = capture / "sources/ota-dataset/mirror"
-        recipe_assets = capture / "metadata/recipe-assets"
-        recipe_assets.mkdir(parents=True)
-        if adapter_source is None:
-            shutil.copyfile(ETCSL_RECIPE / "inventory.py", recipe_assets / "inventory.py")
+        metadata_root = capture / "metadata"
+        metadata_root.mkdir(parents=True)
+        if legacy_recipe_assets:
+            recipe_assets = metadata_root / "recipe-assets"
+            recipe_assets.mkdir(parents=True)
+            if adapter_source is None:
+                shutil.copyfile(ETCSL_RECIPE / "inventory.py", recipe_assets / "inventory.py")
+            else:
+                (recipe_assets / "inventory.py").write_text(adapter_source, encoding="utf-8")
         else:
-            (recipe_assets / "inventory.py").write_text(adapter_source, encoding="utf-8")
+            recipe_bundle = metadata_root / "recipe-bundle"
+            copy_bundle(scan_recipe_directory(self.root / "recipe"), recipe_bundle)
+            if adapter_source is not None:
+                (recipe_bundle / "inventory.py").write_text(adapter_source, encoding="utf-8")
+            bundle = scan_recipe_directory(recipe_bundle)
+            manifest = bundle.manifest(recipe_api=1, collection_id=collection_id)
+            if malformed_bundle_manifest:
+                manifest = {"schema_version": 1}
+            (metadata_root / "recipe-bundle-manifest.json").write_text(
+                json.dumps(manifest),
+                encoding="utf-8",
+            )
         if "ota-dataset" in source_ids:
             shutil.copyfile(
                 ETCSL_RECIPE / "fixtures/catalogue.html",
@@ -209,6 +230,82 @@ user_agent = "text-preserver-test/1.0"
             f"validations/{result.report['validation_id']}",
         )
 
+    def test_legacy_recipe_assets_capture_remains_analyzable(self) -> None:
+        self.create_capture(legacy_recipe_assets=True)
+
+        result = analyze_preservation(
+            load_config(self.config_path), "etcsl-fixture", self.capture
+        )
+
+        self.assertEqual(result.report["analyzer"]["source"], "preserved_capture")
+        self.assertEqual(
+            result.report["recipe_bundle"],
+            {
+                "source": "legacy_recipe_assets",
+                "recipe_api": None,
+                "sha256": None,
+            },
+        )
+
+    def test_preserved_bundle_adapter_can_read_runtime_relative_asset(self) -> None:
+        (self.root / "recipe/template.txt").write_text("bundle runtime asset", encoding="utf-8")
+        self.create_capture(
+            adapter_source="""
+from pathlib import Path
+
+def analyze_capture(capture_directory, **kwargs):
+    value = (Path(__file__).parent / "template.txt").read_text(encoding="utf-8")
+    if value != "bundle runtime asset":
+        raise RuntimeError("wrong runtime asset")
+    return {"status": "complete", "errors": [], "warnings": []}
+""".strip()
+        )
+
+        result = analyze_preservation(
+            load_config(self.config_path), "etcsl-fixture", self.capture
+        )
+
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(result.report["recipe_bundle"]["source"], "captured_bundle")
+
+    def test_captured_collection_toml_is_authoritative_for_preserved_adapter(self) -> None:
+        self.create_capture(
+            adapter_source="""
+def analyze_capture(capture_directory, **kwargs):
+    return {"status": "complete", "errors": [], "warnings": []}
+""".strip()
+        )
+        recipe_path = self.root / "recipe/collection.toml"
+        recipe_path.write_text(
+            recipe_path.read_text(encoding="utf-8").replace(
+                'inventory_adapter = "inventory.py"',
+                'inventory_adapter = "replacement.py"',
+            ),
+            encoding="utf-8",
+        )
+        (self.root / "recipe/replacement.py").write_text(
+            "raise RuntimeError('current replacement must not run')\n",
+            encoding="utf-8",
+        )
+
+        result = analyze_preservation(
+            load_config(self.config_path), "etcsl-fixture", self.capture
+        )
+
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(
+            result.report["analyzer"]["path"],
+            str((self.capture / "metadata/recipe-bundle/inventory.py").resolve()),
+        )
+
+    def test_rejects_malformed_captured_bundle_manifest(self) -> None:
+        self.create_capture(malformed_bundle_manifest=True)
+
+        with self.assertRaisesRegex(AnalysisError, "invalid captured recipe bundle"):
+            analyze_preservation(
+                load_config(self.config_path), "etcsl-fixture", self.capture
+            )
+
     def test_identical_validation_is_reused_without_overwrite(self) -> None:
         self.create_capture()
         config = load_config(self.config_path)
@@ -266,6 +363,33 @@ user_agent = "text-preserver-test/1.0"
                 )
             ),
             3,
+        )
+
+    def test_current_bundle_digest_changes_validation_identity(self) -> None:
+        recipe_path = self.root / "recipe/collection.toml"
+        recipe_path.write_text(
+            recipe_path.read_text(encoding="utf-8").replace(
+                'inventory_adapter = "inventory.py"',
+                'inventory_adapter = "inventory.py"\nprefer_preserved_adapter = false',
+            ),
+            encoding="utf-8",
+        )
+        sibling = self.root / "recipe/template.txt"
+        sibling.write_text("first", encoding="utf-8")
+        self.create_capture()
+
+        first = analyze_preservation(
+            load_config(self.config_path), "etcsl-fixture", self.capture
+        )
+        sibling.write_text("second", encoding="utf-8")
+        second = analyze_preservation(
+            load_config(self.config_path), "etcsl-fixture", self.capture
+        )
+
+        self.assertNotEqual(first.report_path, second.report_path)
+        self.assertNotEqual(
+            first.report["recipe_bundle"]["sha256"],
+            second.report["recipe_bundle"]["sha256"],
         )
 
     def test_legacy_capture_scoped_report_is_not_overwritten(self) -> None:
@@ -573,6 +697,22 @@ def analyze_capture(capture_directory, **kwargs):
         self.assertEqual(
             current_reader_index(load_config(self.config_path), "etcsl-fixture").resolve(),
             rebuilt.index_path.resolve(),
+        )
+
+    def test_current_bundle_digest_is_recorded_in_reader_identity(self) -> None:
+        sibling = self.root / "recipe/template.txt"
+        sibling.write_text("first", encoding="utf-8")
+        self.create_capture()
+        config = load_config(self.config_path)
+
+        first = build_static_reader(config, "etcsl-fixture", self.capture)
+        sibling.write_text("second", encoding="utf-8")
+        second = build_static_reader(config, "etcsl-fixture", self.capture)
+
+        self.assertEqual(first.metadata["recipe_bundle"]["recipe_api"], 1)
+        self.assertNotEqual(
+            first.metadata["recipe_bundle"]["sha256"],
+            second.metadata["recipe_bundle"]["sha256"],
         )
 
     def test_builds_streaming_static_reader(self) -> None:

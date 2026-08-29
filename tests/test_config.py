@@ -192,7 +192,7 @@ allowed_hosts = ["example.org"]
         recipe = recipe_root / "etcsl/collection.toml"
         unrelated.mkdir(parents=True)
         recipe.parent.mkdir(parents=True)
-        recipe.write_text("[collection]\n", encoding="utf-8")
+        recipe.write_text("recipe_api = 1\n\n[collection]\n", encoding="utf-8")
 
         with patch.object(
             recipes,
@@ -206,6 +206,8 @@ allowed_hosts = ["example.org"]
         recipe.parent.mkdir()
         recipe.write_text(
             """
+recipe_api = 1
+
 [collection]
 id = "recipe-collection"
 title = "Recipe Collection"
@@ -226,12 +228,42 @@ allowed_hosts = ["example.org"]
 
         self.assertEqual([item.id for item in config.collections], ["recipe-collection"])
         self.assertEqual(config.collections[0].recipe_path, recipe.resolve())
+        self.assertEqual(config.collections[0].recipe_api, 1)
         self.assertEqual(config.recipe_input_bytes[recipe.resolve()], recipe.read_bytes())
+
+    def test_external_recipe_requires_supported_recipe_api(self) -> None:
+        recipe = self.root / "recipe.toml"
+        body = """
+recipe_api = 2
+
+[collection]
+id = "recipe-collection"
+title = "Recipe Collection"
+
+[[collection.sources]]
+id = "web"
+kind = "web"
+title = "Website"
+seeds = ["https://example.org/"]
+allowed_hosts = ["example.org"]
+""".strip()
+        recipe.write_text(body, encoding="utf-8")
+        operator_config = 'recipes = ["recipe.toml"]\n\n'
+        operator_config += VALID_CONFIG.split("[[collections]]", 1)[0]
+
+        with self.assertRaisesRegex(ConfigError, "recipe_api must be supported value 1"):
+            load_config(self.write_config(operator_config))
+
+        recipe.write_text(body.replace("recipe_api = 2\n\n", ""), encoding="utf-8")
+        with self.assertRaisesRegex(ConfigError, "recipe_api must be supported value 1"):
+            load_config(self.write_config(operator_config))
 
     def test_rejects_duplicate_ids_across_inline_and_recipe_collections(self) -> None:
         recipe = self.root / "recipe.toml"
         recipe.write_text(
             """
+recipe_api = 1
+
 [collection]
 id = "test-collection"
 title = "Duplicate"

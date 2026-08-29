@@ -590,7 +590,7 @@ The implemented first access derivative is built with:
 text-preserver derive reader COLLECTION_ID /path/to/capture
 ```
 
-The generic builder verifies capture fixity before and after rendering, executes only the current installed recipe code, constrains output paths and size, builds an immutable generation, atomically switches the capture-scoped `reader` pointer, and records capture, configuration, recipe, and renderer hashes. Small readers may return an in-memory text mapping. Large readers stream UTF-8 files into a quarantined generation that is checked for symlinks, special files, reserved paths, per-file size, total size, and file count before publication. A usable build also atomically switches `derived/collections/ID/reader` directly to that immutable generation; incomplete builds cannot replace it. `text-preserver open reader COLLECTION_ID` opens this stable access path. The ETCSL renderer produces side-by-side transliteration and translation pages. The GRETIL renderer processes the aggregate ZIP one TEI record at a time and produces complete full-text pages for the 801 reviewed register identifiers with item rights and package provenance.
+The generic builder verifies capture fixity before and after rendering, executes the current recipe code, constrains output paths and size, builds an immutable generation, atomically switches the capture-scoped `reader` pointer, and records capture, configuration, recipe bundle, and renderer hashes. Current external code is identified by scanning its complete recipe directory; current inline code is identified from declared analysis assets only. Small readers may return an in-memory text mapping. Large readers stream UTF-8 files into a quarantined generation that is checked for symlinks, special files, reserved paths, per-file size, total size, and file count before publication. A usable build also atomically switches `derived/collections/ID/reader` directly to that immutable generation; incomplete builds cannot replace it. `text-preserver open reader COLLECTION_ID` opens this stable access path. The ETCSL renderer produces side-by-side transliteration and translation pages. The GRETIL renderer processes the aggregate ZIP one TEI record at a time and produces complete full-text pages for the 801 reviewed register identifiers with item rights and package provenance.
 
 ---
 
@@ -891,7 +891,11 @@ A private operator configuration may reference public collection recipes:
 recipes = ["public:etcsl"]
 ```
 
-`public:ID` references resolve recipes shipped with the source or installed distribution. Filesystem recipe paths are resolved relative to the operator configuration. A recipe contains one `[collection]` table and is validated with the same inheritance and strict-key rules as an inline `[[collections]]` table. Captures preserve the operator input, selected recipe input, and configured recipe-relative analysis assets so later analysis can use the same adapter bytes.
+`public:ID` references resolve recipes shipped with the source or installed distribution. Filesystem recipe paths are resolved relative to the operator configuration. An external recipe requires top-level `recipe_api = 1`, contains one `[collection]` table, and is otherwise validated with the same inheritance and strict-key rules as an inline `[[collections]]` table. Inline collections do not declare a recipe API.
+
+The external bundle boundary is the selected recipe file's parent directory. Capture recursively includes every bounded regular file, so TOML, adapter modules, fixtures, seeds, rules, templates, and README files remain available. Inline collections synthesize a bundle from only declared recipe-relative `inventory_adapter`, `normalizer`, and `ciao_rules` files rather than recursively copying the configuration directory. Both forms reject symlinks, special files, path escapes, more than 1,000 files, individual files over 16 MiB, or a total over 64 MiB. Only `__pycache__`, `.pyc`, `.pyo`, and `.DS_Store` are excluded as transient cache artifacts.
+
+Capture writes the files below `metadata/recipe-bundle/` and writes `metadata/recipe-bundle-manifest.json` with schema version, recipe API (null for inline configuration), collection ID, POSIX-sorted path/size/SHA-256 entries, and the SHA-256 of canonical JSON over those entries. The captured `recipe-bundle/collection.toml` is authoritative for an external recipe; `input-collection-recipe.toml` may also be retained as provenance.
 
 ```toml
 [project]
@@ -1007,7 +1011,9 @@ source settings
 
 Collection-specific knowledge should live in recipes, adapters, and rules rather than in hard-coded branches in the generic engine.
 
-Preservation analysis uses the adapter embedded in the immutable capture by default when one capture supplies the selected source view. A recipe may set `prefer_preserved_adapter = false` when collection-level completeness criteria are expected to evolve and old captures must be reassessed by the current adapter. An aggregate assembled from multiple captures always uses the current recipe adapter because no capture-time adapter represents that combined input. Reports record the adapter source and hash and warn whenever current recipe code is used.
+Preservation analysis uses the adapter embedded in the immutable capture by default when one capture supplies the selected source view. New captures verify the bundle manifest and use the adapter path declared by authoritative captured `collection.toml`; keeping `__file__` inside the complete bundle permits runtime-relative fixtures and templates. A recipe may set `prefer_preserved_adapter = false` when collection-level completeness criteria are expected to evolve and old captures must be reassessed by the current adapter. An aggregate assembled from multiple captures always uses the current recipe adapter because no capture-time adapter represents that combined input. Reports record the adapter source and hash and warn whenever current recipe code is used. Immutable captures predating bundle manifests may use `metadata/recipe-assets/`; this compatibility path is labeled `legacy_recipe_assets` and deliberately has no bundle digest or recipe API identity.
+
+Recipe adapters are trusted local code, not a sandbox boundary. Filesystem checks protect bundle and derivative paths, but arbitrary third-party Python imports made by an adapter are not sandboxed.
 
 ---
 
@@ -1036,6 +1042,11 @@ data/
 │                   ├── metadata/
 │                   │   ├── environment.json
 │                   │   ├── input-config.toml
+│                   │   ├── input-collection-recipe.toml
+│                   │   ├── recipe-bundle-manifest.json
+│                   │   ├── recipe-bundle/
+│                   │   │   ├── collection.toml
+│                   │   │   └── ...
 │                   │   └── resolved-collection.json
 │                   └── sources/
 │                       ├── web/
@@ -1092,6 +1103,8 @@ Derived validation pointers have separate semantics. `validations/LATEST` names 
 ## Collection recipes
 
 A collection recipe contains the knowledge needed to capture and understand one collection without contaminating the generic engine.
+
+Its file starts with `recipe_api = 1`. That explicit API gates incompatible recipe semantics independently of the operator configuration schema.
 
 Proposed layout:
 
@@ -1354,7 +1367,7 @@ The system should answer:
 
 Analysis may combine independently finalized source captures. With no explicit input, the candidate set is collection `LATEST` plus every existing `LATEST-SOURCE_ID`; explicit capture paths replace that set. Every candidate is fixity-verified, source providers are selected deterministically by successful status and then newer capture ID, and every contributing capture is verified again after adapter execution. The temporary aggregate contains a synthetic `capture.json` and source links whose targets remain under those verified captures.
 
-Validation reports are immutable, derived objects under `derived/collections/ID/validations/VALIDATION_ID/report.json`. `VALIDATION_ID` is the SHA-256 of canonical JSON covering the report schema, contributing capture IDs and manifest hashes, source-to-capture map, adapter digest and source, effective expectations, required representations and sources, current configuration hash, and current recipe TOML hash when present. Reports record those inputs and a creation timestamp. Repeating identical inputs reuses the existing report rather than overwriting historical assessment output.
+Validation reports are immutable, derived objects under `derived/collections/ID/validations/VALIDATION_ID/report.json`. `VALIDATION_ID` is the SHA-256 of canonical JSON covering the report schema, contributing capture IDs and manifest hashes, source-to-capture map, adapter digest and source, effective expectations, required representations and sources, current configuration hash, and the used recipe bundle digest/API. A preserved adapter uses and verifies the captured manifest; current external code scans the current recipe directory; current inline code scans only declared assets. Malformed or mismatched captured manifests are rejected. Reports record those inputs and a creation timestamp. Repeating identical inputs reuses the existing report rather than overwriting historical assessment output.
 
 ### Technical validity
 

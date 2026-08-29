@@ -18,6 +18,7 @@ from text_preserver.recipes import public_recipe_path
 SAFE_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$")
 HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 BYTE_SIZE_RE = re.compile(r"^([1-9][0-9]*)([KkMmGg]?)$")
+SUPPORTED_RECIPE_API = 1
 
 DEFAULT_CAPTURE_SETTINGS: dict[str, Any] = {
     "engine": "wget",
@@ -136,6 +137,7 @@ class CollectionConfig:
     capture: Mapping[str, Any]
     analysis: Mapping[str, Any]
     recipe_path: Path | None
+    recipe_api: int | None
 
 
 @dataclass(frozen=True)
@@ -178,7 +180,13 @@ def load_config(path: str | Path) -> Config:
     seen_collection_ids: set[str] = set()
     for index, value in enumerate(collection_values):
         label = f"collections[{index}]"
-        collection = _load_collection(value, label, defaults_capture, recipe_path=None)
+        collection = _load_collection(
+            value,
+            label,
+            defaults_capture,
+            recipe_path=None,
+            recipe_api=None,
+        )
         if collection.id in seen_collection_ids:
             raise ConfigError(f"{label}.id: duplicate collection ID {collection.id!r}")
         seen_collection_ids.add(collection.id)
@@ -197,13 +205,20 @@ def load_config(path: str | Path) -> Config:
         else:
             recipe_path = _resolve_path(value, config_path.parent)
         recipe_raw, recipe_bytes = _read_toml(recipe_path, "collection recipe")
-        _only_keys(recipe_raw, {"collection"}, f"recipe {recipe_path}")
+        _only_keys(recipe_raw, {"recipe_api", "collection"}, f"recipe {recipe_path}")
+        recipe_api = recipe_raw.get("recipe_api")
+        if type(recipe_api) is not int or recipe_api != SUPPORTED_RECIPE_API:
+            raise ConfigError(
+                f"recipe {recipe_path}: recipe_api must be supported value "
+                f"{SUPPORTED_RECIPE_API}"
+            )
         label = f"recipe {recipe_path}: collection"
         collection = _load_collection(
             recipe_raw.get("collection"),
             label,
             defaults_capture,
             recipe_path=recipe_path,
+            recipe_api=recipe_api,
         )
         if collection.id in seen_collection_ids:
             raise ConfigError(f"{label}.id: duplicate collection ID {collection.id!r}")
@@ -291,6 +306,7 @@ def _load_collection(
     defaults_capture: Mapping[str, Any],
     *,
     recipe_path: Path | None,
+    recipe_api: int | None,
 ) -> CollectionConfig:
     table = _table(value, label)
     _only_keys(
@@ -351,6 +367,7 @@ def _load_collection(
         capture=MappingProxyType(collection_capture),
         analysis=MappingProxyType(analysis),
         recipe_path=recipe_path,
+        recipe_api=recipe_api,
     )
 
 

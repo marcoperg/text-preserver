@@ -14,12 +14,19 @@ import shutil
 import stat
 import sys
 import tempfile
+import tomllib
 from types import ModuleType
 from typing import Any, Mapping, Sequence
 
 from text_preserver.capture.plan import CAPTURE_ID_RE
 from text_preserver.config import SAFE_ID_RE, CollectionConfig, Config
 from text_preserver.manifest import MANIFEST_NAME, verify_capture
+from text_preserver.recipe_bundle import (
+    RecipeBundleError,
+    scan_declared_assets,
+    scan_recipe_directory,
+    verify_bundle_manifest,
+)
 
 
 class AnalysisError(RuntimeError):
@@ -74,7 +81,7 @@ class ReaderResult:
         }
 
 
-VALIDATION_REPORT_SCHEMA_VERSION = 2
+VALIDATION_REPORT_SCHEMA_VERSION = 3
 SUCCESS_STATUSES = frozenset({"complete", "complete_with_warnings"})
 SOURCE_STATUSES = SUCCESS_STATUSES | frozenset(
     {"running", "partial", "failed", "interrupted"}
@@ -141,7 +148,7 @@ def analyze_preservation(
     if not isinstance(adapter_value, str):
         raise AnalysisError(f"collection {collection.id} has no inventory adapter")
     aggregate = len(contributing) > 1
-    adapter_path, adapter_source = _adapter_path(
+    adapter_path, adapter_source, recipe_bundle_identity = _adapter_path(
         config,
         collection,
         capture_directory,
@@ -163,11 +170,6 @@ def analyze_preservation(
     )
     required_source_ids = tuple(source.id for source in collection.sources if source.required)
     configuration_sha256 = hashlib.sha256(config.input_bytes).hexdigest()
-    recipe_sha256 = (
-        hashlib.sha256(config.recipe_input_bytes[collection.recipe_path]).hexdigest()
-        if collection.recipe_path is not None
-        else None
-    )
     source_capture_map = {
         source_id: capture.capture_id
         for source_id, (capture, _record, _directory) in sorted(selected_sources.items())
@@ -190,7 +192,7 @@ def analyze_preservation(
         "required_representation_kinds": list(required_representation_kinds),
         "required_source_ids": list(required_source_ids),
         "configuration_sha256": configuration_sha256,
-        "recipe_sha256": recipe_sha256,
+        "recipe_bundle": recipe_bundle_identity,
     }
     validation_id = hashlib.sha256(_canonical_json(validation_inputs)).hexdigest()
     relative_validation = (
@@ -264,6 +266,7 @@ def analyze_preservation(
     report["validation_id"] = validation_id
     report["created_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     report["validation_inputs"] = validation_inputs
+    report["recipe_bundle"] = recipe_bundle_identity
     report["source_capture_map"] = source_capture_map
     report["contributing_capture_ids"] = [
         capture.capture_id for capture in contributing
@@ -570,7 +573,7 @@ def build_static_reader(
     adapter_value = collection.analysis.get("inventory_adapter")
     if not isinstance(adapter_value, str):
         raise AnalysisError(f"collection {collection.id} has no reader adapter")
-    adapter_path, adapter_source = _adapter_path(
+    adapter_path, adapter_source, recipe_bundle_identity = _adapter_path(
         config,
         collection,
         capture_directory,
@@ -623,18 +626,14 @@ def build_static_reader(
             )
 
         metadata: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "status": status,
             "collection_id": collection.id,
             "capture_id": capture_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "capture_manifest_sha256": _sha256(capture_directory / MANIFEST_NAME),
             "configuration_sha256": hashlib.sha256(config.input_bytes).hexdigest(),
-            "recipe_sha256": (
-                hashlib.sha256(config.recipe_input_bytes[collection.recipe_path]).hexdigest()
-                if collection.recipe_path is not None
-                else None
-            ),
+            "recipe_bundle": recipe_bundle_identity,
             "expected_work_count": collection.analysis.get("expected_work_count", 0),
             "renderer": {
                 "path": str(adapter_path),
@@ -807,21 +806,71 @@ def _adapter_path(
     value: str,
     *,
     prefer_preserved: bool = True,
-) -> tuple[Path, str]:
+) -> tuple[Path, str, dict[str, Any]]:
     path = Path(value).expanduser()
     base = collection.recipe_path.parent if collection.recipe_path else config.path.parent
+    bundle_root = capture_directory / "metadata" / "recipe-bundle"
+    bundle_manifest = capture_directory / "metadata" / "recipe-bundle-manifest.json"
+    captured_identity: dict[str, Any] | None = None
+    captured_manifest: dict[str, Any] | None = None
+    if (
+        bundle_root.exists()
+        or bundle_root.is_symlink()
+        or bundle_manifest.exists()
+        or bundle_manifest.is_symlink()
+    ):
+        try:
+            captured_bundle, captured_manifest = verify_bundle_manifest(
+                bundle_root,
+                bundle_manifest,
+                expected_collection_id=collection.id,
+            )
+        except RecipeBundleError as exc:
+            raise AnalysisError(f"invalid captured recipe bundle: {exc}") from exc
+        if captured_manifest["recipe_api"] != collection.recipe_api:
+            raise AnalysisError(
+                "captured recipe bundle API does not match the resolved collection"
+            )
+        captured_identity = {
+            "source": "captured_bundle",
+            "recipe_api": captured_manifest["recipe_api"],
+            "sha256": captured_bundle.sha256,
+        }
     if not path.is_absolute() and prefer_preserved:
-        if ".." in path.parts:
-            raise AnalysisError(f"inventory adapter has an unsafe relative path: {value}")
-        preserved_root = capture_directory / "metadata" / "recipe-assets"
-        preserved = preserved_root / path
-        resolved_preserved = preserved.resolve()
+        preserved_value = value
+        if captured_manifest is not None and captured_manifest["recipe_api"] is not None:
+            preserved_value = _captured_recipe_adapter(bundle_root, captured_manifest)
+        preserved_path = Path(preserved_value)
+        if preserved_path.is_absolute() or ".." in preserved_path.parts:
+            raise AnalysisError(
+                f"inventory adapter has an unsafe relative path: {preserved_value}"
+            )
+        if captured_identity is not None:
+            preserved = bundle_root / preserved_path
+            resolved_preserved = preserved.resolve()
+            if (
+                not resolved_preserved.is_relative_to(bundle_root.resolve())
+                or preserved.is_symlink()
+                or not preserved.is_file()
+            ):
+                raise AnalysisError(
+                    f"captured recipe bundle has no regular inventory adapter: {preserved_value}"
+                )
+            return resolved_preserved, "preserved_capture", captured_identity
+
+        legacy_root = capture_directory / "metadata" / "recipe-assets"
+        legacy = legacy_root / preserved_path
+        resolved_legacy = legacy.resolve()
         if (
-            resolved_preserved.is_relative_to(preserved_root.resolve())
-            and preserved.is_file()
-            and not preserved.is_symlink()
+            resolved_legacy.is_relative_to(legacy_root.resolve())
+            and legacy.is_file()
+            and not legacy.is_symlink()
         ):
-            return resolved_preserved, "preserved_capture"
+            return resolved_legacy, "preserved_capture", {
+                "source": "legacy_recipe_assets",
+                "recipe_api": None,
+                "sha256": None,
+            }
     if not path.is_absolute():
         path = base / path
     resolved = path.resolve()
@@ -829,7 +878,56 @@ def _adapter_path(
         raise AnalysisError(f"inventory adapter escapes its configuration directory: {value}")
     if resolved.is_symlink() or not resolved.is_file():
         raise AnalysisError(f"inventory adapter is not a regular file: {resolved}")
-    return resolved, "current_recipe"
+    return resolved, "current_recipe", _current_recipe_identity(config, collection)
+
+
+def _captured_recipe_adapter(
+    bundle_root: Path,
+    manifest: Mapping[str, Any],
+) -> str:
+    recipe_path = bundle_root / "collection.toml"
+    try:
+        if recipe_path.is_symlink() or not recipe_path.is_file():
+            raise AnalysisError("captured recipe bundle has no authoritative collection.toml")
+        recipe = tomllib.loads(recipe_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise AnalysisError(f"cannot read captured recipe bundle collection.toml: {exc}") from exc
+    if not isinstance(recipe, dict) or recipe.get("recipe_api") != manifest["recipe_api"]:
+        raise AnalysisError("captured collection.toml has a mismatched recipe API")
+    raw_collection = recipe.get("collection")
+    if not isinstance(raw_collection, dict) or raw_collection.get("id") != manifest["collection_id"]:
+        raise AnalysisError("captured collection.toml has a mismatched collection ID")
+    raw_analysis = raw_collection.get("analysis")
+    adapter = raw_analysis.get("inventory_adapter") if isinstance(raw_analysis, dict) else None
+    if not isinstance(adapter, str) or not adapter:
+        raise AnalysisError("captured collection.toml has no inventory adapter")
+    return adapter
+
+
+def _current_recipe_identity(
+    config: Config,
+    collection: CollectionConfig,
+) -> dict[str, Any]:
+    base = collection.recipe_path.parent if collection.recipe_path else config.path.parent
+    try:
+        if collection.recipe_path is not None:
+            bundle = scan_recipe_directory(base)
+            source = "current_recipe_bundle"
+        else:
+            declared = (
+                value
+                for key in ("inventory_adapter", "normalizer", "ciao_rules")
+                if isinstance((value := collection.analysis.get(key)), str)
+            )
+            bundle = scan_declared_assets(base, declared)
+            source = "current_inline_assets"
+    except RecipeBundleError as exc:
+        raise AnalysisError(f"cannot inventory current recipe bundle: {exc}") from exc
+    return {
+        "source": source,
+        "recipe_api": collection.recipe_api,
+        "sha256": bundle.sha256,
+    }
 
 
 def _validate_reader_payload(

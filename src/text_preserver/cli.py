@@ -327,6 +327,7 @@ def _collection_summary(collection: CollectionConfig) -> dict[str, object]:
         "enabled": collection.enabled,
         "source_count": len(collection.sources),
         "recipe_path": str(collection.recipe_path) if collection.recipe_path else None,
+        "recipe_api": collection.recipe_api,
     }
 
 

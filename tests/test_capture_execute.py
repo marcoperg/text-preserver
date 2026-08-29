@@ -212,9 +212,105 @@ class CaptureExecutionTests(unittest.TestCase):
             config.input_bytes,
         )
         self.assertEqual(
-            (result.capture_directory / "metadata/recipe-assets/inventory.py").read_bytes(),
+            (result.capture_directory / "metadata/recipe-bundle/inventory.py").read_bytes(),
             adapter.read_bytes(),
         )
+        bundle_manifest = json.loads(
+            (result.capture_directory / "metadata/recipe-bundle-manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertIsNone(bundle_manifest["recipe_api"])
+        self.assertFalse(
+            (result.capture_directory / "metadata/recipe-bundle/collections.toml").exists()
+        )
+
+    @patch(
+        "text_preserver.capture.execute._run_wget",
+        return_value=subprocess.CompletedProcess([], 0, "", ""),
+    )
+    @patch(
+        "text_preserver.capture.execute._validated_wget",
+        return_value=("/usr/bin/wget", "GNU Wget test"),
+    )
+    def test_recipe_capture_preserves_complete_recursive_bundle(
+        self,
+        _mock_validated_wget: object,
+        _mock_run_wget: object,
+    ) -> None:
+        recipe = self.root / "recipe"
+        (recipe / "fixtures").mkdir(parents=True)
+        (recipe / "templates").mkdir()
+        (recipe / "__pycache__").mkdir()
+        (recipe / "collection.toml").write_text(
+            """
+recipe_api = 1
+
+[collection]
+id = "bundled"
+title = "Bundled Recipe"
+
+[collection.analysis]
+inventory_adapter = "inventory.py"
+
+[[collection.sources]]
+id = "data"
+kind = "http-file"
+title = "Data"
+seeds = ["https://example.org/data.txt"]
+allowed_hosts = ["example.org"]
+
+[collection.sources.capture]
+recursive = false
+page_requisites = false
+convert_links = false
+adjust_extension = false
+""".strip(),
+            encoding="utf-8",
+        )
+        (recipe / "inventory.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (recipe / "fixtures/example.txt").write_text("fixture\n", encoding="utf-8")
+        (recipe / "templates/page.html").write_text("<p>template</p>\n", encoding="utf-8")
+        (recipe / "README.md").write_text("recipe documentation\n", encoding="utf-8")
+        (recipe / "ignored.pyc").write_bytes(b"transient")
+        (recipe / "__pycache__/ignored.py").write_text("transient\n", encoding="utf-8")
+        self.config_path.write_text(
+            """
+recipes = ["recipe/collection.toml"]
+
+[project]
+archive_root = "./data/archive"
+derived_root = "./data/derived"
+workspace_root = "./data/workspace"
+operator = "Test operator"
+contact = "mailto:test@example.org"
+user_agent = "text-preserver-test/1.0"
+""".strip(),
+            encoding="utf-8",
+        )
+
+        result = execute_capture(
+            load_config(self.config_path),
+            "bundled",
+            capture_id="20260827T120000Z-b1c2d3",
+        )
+
+        bundle = result.capture_directory / "metadata/recipe-bundle"
+        self.assertEqual((bundle / "fixtures/example.txt").read_text(), "fixture\n")
+        self.assertTrue((bundle / "templates/page.html").is_file())
+        self.assertTrue((bundle / "README.md").is_file())
+        self.assertFalse((bundle / "ignored.pyc").exists())
+        self.assertFalse((bundle / "__pycache__").exists())
+        manifest = json.loads(
+            (result.capture_directory / "metadata/recipe-bundle-manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        paths = [entry["path"] for entry in manifest["files"]]
+        self.assertEqual(paths, sorted(paths))
+        self.assertEqual(manifest["recipe_api"], 1)
+        self.assertIn("fixtures/example.txt", paths)
+        self.assertIn("templates/page.html", paths)
 
     @patch("text_preserver.capture.execute._run_wget", side_effect=KeyboardInterrupt)
     def test_interruption_is_preserved_at_source_and_capture_level(

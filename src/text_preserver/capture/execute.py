@@ -26,6 +26,12 @@ from text_preserver.capture.engines.wget import WgetCommand
 from text_preserver.capture.plan import CAPTURE_ID_RE, CapturePlan, plan_capture
 from text_preserver.config import CollectionConfig, Config, SourceConfig
 from text_preserver.manifest import ManifestError, finalize_capture, verify_capture
+from text_preserver.recipe_bundle import (
+    RecipeBundleError,
+    copy_bundle,
+    scan_declared_assets,
+    scan_recipe_directory,
+)
 
 
 class CaptureExecutionError(RuntimeError):
@@ -198,7 +204,7 @@ def _execute_plan(
             (metadata_root / "input-collection-recipe.toml").write_bytes(
                 config.recipe_input_bytes[collection.recipe_path]
             )
-        _preserve_recipe_assets(config, collection, metadata_root)
+        _preserve_recipe_bundle(config, collection, metadata_root)
         _write_json(
             metadata_root / "environment.json",
             _environment_metadata(wget_version),
@@ -389,6 +395,7 @@ def _collection_dict(collection: CollectionConfig) -> dict[str, Any]:
         "tags": list(collection.tags),
         "enabled": collection.enabled,
         "recipe_path": str(collection.recipe_path) if collection.recipe_path else None,
+        "recipe_api": collection.recipe_api,
         "capture": _plain(collection.capture),
         "analysis": _plain(collection.analysis),
         "sources": [_source_dict(source) for source in collection.sources],
@@ -408,30 +415,52 @@ def _source_dict(source: SourceConfig) -> dict[str, Any]:
     }
 
 
-def _preserve_recipe_assets(
+def _preserve_recipe_bundle(
     config: Config,
     collection: CollectionConfig,
     metadata_root: Path,
 ) -> None:
     base = collection.recipe_path.parent if collection.recipe_path else config.path.parent
-    assets_root = metadata_root / "recipe-assets"
-    for key in ("inventory_adapter", "normalizer", "ciao_rules"):
-        value = collection.analysis.get(key)
-        if not isinstance(value, str):
-            continue
-        relative = Path(value)
-        if relative.is_absolute() or ".." in relative.parts:
-            raise CaptureExecutionError(
-                f"collection {collection.id} analysis asset must be recipe-relative: {value}"
-            )
-        source = (base / relative).resolve()
-        if not source.is_relative_to(base.resolve()) or source.is_symlink() or not source.is_file():
-            raise CaptureExecutionError(
-                f"collection {collection.id} analysis asset is not a regular recipe file: {source}"
-            )
-        target = assets_root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(source.read_bytes())
+    declared = tuple(
+        value
+        for key in ("inventory_adapter", "normalizer", "ciao_rules")
+        if isinstance((value := collection.analysis.get(key)), str)
+    )
+    try:
+        if collection.recipe_path is not None:
+            bundle = scan_recipe_directory(base)
+        else:
+            bundle = scan_declared_assets(base, declared)
+        bundle_root = metadata_root / "recipe-bundle"
+        copy_bundle(bundle, bundle_root)
+        source_after_copy = (
+            scan_recipe_directory(base)
+            if collection.recipe_path is not None
+            else scan_declared_assets(base, declared)
+        )
+        if source_after_copy.sha256 != bundle.sha256:
+            raise RecipeBundleError("recipe bundle changed while copying")
+        if collection.recipe_path is not None:
+            authoritative = bundle_root / "collection.toml"
+            recipe_bytes = config.recipe_input_bytes[collection.recipe_path]
+            if authoritative.exists() and authoritative.read_bytes() != recipe_bytes:
+                raise RecipeBundleError(
+                    "recipe directory collection.toml differs from the selected recipe file"
+                )
+            if not authoritative.exists():
+                authoritative.write_bytes(recipe_bytes)
+            bundle = scan_recipe_directory(bundle_root)
+        _write_json(
+            metadata_root / "recipe-bundle-manifest.json",
+            bundle.manifest(
+                recipe_api=collection.recipe_api,
+                collection_id=collection.id,
+            ),
+        )
+    except (OSError, RecipeBundleError) as exc:
+        raise CaptureExecutionError(
+            f"cannot preserve recipe bundle for collection {collection.id}: {exc}"
+        ) from exc
 
 
 def _plain(value: Any) -> Any:
