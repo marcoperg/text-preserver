@@ -2015,6 +2015,10 @@ Use small, redistributable fixtures representing:
 - duplicate identifiers;
 - changing source URLs.
 
+### Distribution tests
+
+CI runs on Linux and macOS with Python 3.11. It builds wheel and source distributions, installs the wheel into a clean virtual environment outside the source tree, verifies the complete packaged file set for every public recipe, and executes a localhost-only capture → fixity → validation → reader flow through the installed package. This specifically guards recipe resource discovery and data-file behavior that editable installs can conceal.
+
 ### Live capture tests
 
 Live captures should be manual or explicitly enabled. CI must not crawl old public servers on every push.

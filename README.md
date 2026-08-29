@@ -91,6 +91,8 @@ text-preserver capture COLLECTION_ID \
 
 Use `--source SOURCE_ID` to select individual sources and `--json` for a machine-readable plan. The test suite executes these plans only against a localhost fixture and verifies recursive mirror, WARC, CDX, log, and redirect behavior.
 
+GitHub Actions runs the suite on Linux and macOS with Python 3.11, builds wheel and source distributions, installs the wheel into a clean virtual environment, verifies every packaged public recipe asset, and runs a localhost-only capture → fixity → validation → reader flow against the installed package.
+
 After reviewing the dry run, execute a supervised capture:
 
 ```bash

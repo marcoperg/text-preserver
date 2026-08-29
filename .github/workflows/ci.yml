@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install GNU Wget on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes wget
+      - name: Install GNU Wget on macOS
+        if: runner.os == 'macOS'
+        run: brew install wget
+      - name: Run source tests
+        run: PYTHONPATH=src python -m unittest
+      - name: Build distributions
+        run: python -m pip install build && python -m build
+      - name: Install wheel in clean environment
+        run: python -m venv .wheel-venv && .wheel-venv/bin/python -m pip install dist/*.whl
+      - name: Run installed fixture flow
+        run: mkdir "${RUNNER_TEMP}/text-preserver-smoke" && cd "${RUNNER_TEMP}/text-preserver-smoke" && "${GITHUB_WORKSPACE}/.wheel-venv/bin/python" "${GITHUB_WORKSPACE}/tests/installed_smoke.py"
