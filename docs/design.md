@@ -73,7 +73,7 @@ The project has three progressively optional responsibilities:
    Capture original sites, files, datasets, metadata, and publication context.
 
 2. Understand
-   Inventory collections, identify works and representations, validate
+   Inventory collections, identify items and representations, validate
    completeness, and derive searchable structure.
 
 3. Research
@@ -242,7 +242,7 @@ When practical, preserve both.
 
 A TEI source, an HTML transformation, a translation, a transliteration, a PDF edition, and a scan are not interchangeable files.
 
-They should be connected as representations of a work or version, not collapsed into a single “document.”
+They should be connected to typed items through explicit representation and version relations, not collapsed into a single “document.”
 
 ### 5. Make scope explicit
 
@@ -277,7 +277,7 @@ A capture is a dated preservation event. Do not manually “fix” files inside 
 A normalized passage, annotation, extracted entity, logical fact, or LLM-generated proposal should point back to:
 
 - a collection;
-- a work or representation;
+- an item or representation;
 - a capture;
 - a source artifact hash;
 - a source locator or quotation.
@@ -365,25 +365,34 @@ HTTP status and headers
 local preservation path
 ```
 
-### Work
+### Item
 
-A **work** is an intellectual object represented in the collection.
+An **item** is the minimal universal intellectual entity represented in a collection. Recipes assign item types rather than forcing every collection into a literary-work hierarchy.
 
-Examples:
+Examples include:
 
-- one Sumerian composition;
-- the Sāṃkhyakārikā;
-- one hymn;
-- one bibliographic record;
-- one dictionary entry, when the collection models entries independently.
+- work;
+- edition;
+- recension;
+- translation;
+- transliteration;
+- transcription;
+- commentary;
+- dictionary entry;
+- bibliographic record;
+- inscription;
+- manuscript;
+- document.
 
-### Text version
+A text version remains an important concept, but it is represented by a typed item or relation when appropriate rather than by a mandatory level in every collection.
 
-A **text version** is a particular edition, recension, translation, transliteration, transcription, or commentary.
+### Item relation
+
+An **item relation** is a typed, directed connection between items. Relation types may include `edition_of`, `translation_of`, `transliteration_of`, `commentary_on`, `part_of`, `derived_from`, and collection-specific relationships. Relations preserve provenance and may carry ordering or certainty metadata.
 
 ### Representation
 
-A **representation** is a concrete encoding or publication of a version:
+A **representation** is a concrete encoding or publication associated with one or more items:
 
 - TEI/XML;
 - HTML;
@@ -406,6 +415,8 @@ A **segment** is an addressable part of a representation:
 - paragraph;
 - entry;
 - generated text span.
+
+Representations and artifacts are not required to form a strict ownership tree. One artifact, such as a WARC or aggregate ZIP, may realize many representations, and one representation may depend on several artifacts. Derived catalogues record those links explicitly.
 
 ### Annotation and claim
 
@@ -547,7 +558,7 @@ Examples:
 
 ```text
 collection inventory
-work/version/representation catalogue
+item/representation/relation catalogue
 normalized Unicode text
 segment boundaries
 TEI validation reports
@@ -589,20 +600,21 @@ A unified frontend is a natural long-term access layer, provided that it unifies
 
 The reader should not pretend that all collections share the same textual structure. Instead, it should expose a common model while preserving collection-specific detail.
 
-### Proposed common hierarchy
+### Common model
 
 ```text
 Collection
-└── Work
-    └── TextVersion
-        └── Representation
-            └── Segment
-                └── Artifact
+├── Item ──typed relation──> Item
+├── Item ──represented by──> Representation
+├── Representation ──contains──> Segment
+└── Representation <──realized by──> Artifact
 ```
+
+These are graph relations, not a mandatory ownership tree. Recipes may expose work, edition, translation, or text-version views where those concepts fit, while bibliographies, dictionaries, inscriptions, catalogues, and database records retain their own item types. Stable identifiers and provenance-bearing relations provide the common contract.
 
 ### Initial reader features
 
-- browse collections and works;
+- browse collections and typed items;
 - full-text search across selected collections;
 - filter by language, genre, author, collection, version, or representation;
 - open the exact archived source;
@@ -1107,7 +1119,7 @@ A recipe may define:
 - encodings;
 - rights notes;
 - inventory extraction;
-- source-to-work mappings;
+- source-to-item mappings;
 - normalization rules;
 - completeness assertions;
 - local tests and fixtures.
