@@ -346,6 +346,8 @@ failed
 
 A source-filtered or partial capture must not silently replace the latest successful full capture.
 
+Acquisition status depends on retained substantive payload, not container presence alone. An accepted Wget exit is complete only with at least one regular mirror file or evidence of a retained WARC `response` or `resource`; an accepted empty or metadata-only result is failed. A nonaccepted exit with substantive payload is partial and one without it is failed. Interruption remains a distinct status while retaining its measured payload metrics. Collection aggregation uses the same evidence, with legacy mirror counters understood for immutable older manifests.
+
 ### Artifact
 
 An **artifact** is a captured file or WARC record with identity and provenance.
@@ -1663,10 +1665,12 @@ Capture metadata should include:
 - host operating-system information;
 - source exit status;
 - redirects and HTTP failures;
-- downloaded object and byte counts;
+- separate mirror file/byte and WARC container/CDX/indexed-record counts;
 - logs;
 - previous indexes used for deduplication;
 - operator notes.
+
+Capture manifest schema version 2 stores these values under `payloads.mirror` and `payloads.warc`. `downloaded_files` and `downloaded_bytes` remain persisted compatibility aliases for mirror files and bytes only. CDX parsing is bounded and treats header-only indexes as zero records; absent or unusable CDX leaves the indexed count unknown and permits only bounded WARC-header inspection for response/resource evidence. Symlinks and special payload objects are never followed and are surfaced in source warnings.
 
 ### Completeness
 

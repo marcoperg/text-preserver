@@ -84,8 +84,18 @@ class WgetIntegrationTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=5)
 
-    def write_config(self, seed_path: str) -> Path:
+    def write_config(self, seed_path: str, *, mirror: bool = True) -> Path:
         port = self.server.server_port
+        source_capture = ""
+        if not mirror:
+            source_capture = """
+
+[collections.sources.capture]
+mirror = false
+page_requisites = false
+convert_links = false
+adjust_extension = false
+"""
         config = f"""
 [project]
 archive_root = "./archive"
@@ -111,6 +121,7 @@ kind = "web"
 title = "Local website"
 seeds = ["http://127.0.0.1:{port}{seed_path}"]
 allowed_hosts = ["127.0.0.1"]
+{source_capture}
 """.strip()
         path = self.root / "collections.toml"
         path.write_text(config, encoding="utf-8")
@@ -173,6 +184,46 @@ allowed_hosts = ["127.0.0.1"]
         )
         self.assertEqual(capture.source_latest_updated, ("web",))
         self.assertTrue(verify_capture(latest.parent).ok)
+
+        source_result = capture.metadata["sources"][0]
+        mirror_files = [path for path in (source_root / "mirror").rglob("*") if path.is_file()]
+        warc_files = list((source_root / "warc").glob("capture*.warc.gz"))
+        cdx_files = list((source_root / "warc").glob("capture*.cdx"))
+        self.assertEqual(source_result["downloaded_files"], len(mirror_files))
+        self.assertEqual(
+            source_result["downloaded_bytes"],
+            sum(path.stat().st_size for path in mirror_files),
+        )
+        self.assertEqual(source_result["payloads"]["mirror"]["files"], len(mirror_files))
+        self.assertEqual(source_result["payloads"]["warc"]["files"], len(warc_files))
+        self.assertEqual(
+            source_result["payloads"]["warc"]["bytes"],
+            sum(path.stat().st_size for path in warc_files),
+        )
+        self.assertEqual(source_result["payloads"]["warc"]["cdx_files"], len(cdx_files))
+        self.assertGreater(source_result["payloads"]["warc"]["indexed_records"], 0)
+        self.assertTrue(source_result["payloads"]["warc"]["has_response_or_resource"])
+
+    def test_warc_only_capture_has_substantive_metrics(self) -> None:
+        config = load_config(self.write_config("/index.html", mirror=False))
+
+        capture = execute_capture(
+            config,
+            "local-fixture",
+            capture_id="20260827T120000Z-w1r2c3",
+        )
+
+        source = capture.metadata["sources"][0]
+        warc = source["payloads"]["warc"]
+        self.assertEqual(capture.status, "complete")
+        self.assertEqual(source["payloads"]["mirror"], {"files": 0, "bytes": 0})
+        self.assertEqual(source["downloaded_files"], 0)
+        self.assertEqual(source["downloaded_bytes"], 0)
+        self.assertGreater(warc["files"], 0)
+        self.assertGreater(warc["bytes"], 0)
+        self.assertGreater(warc["cdx_files"], 0)
+        self.assertGreater(warc["indexed_records"], 0)
+        self.assertTrue(warc["has_response_or_resource"])
 
     def test_source_filtered_capture_does_not_update_latest(self) -> None:
         config = load_config(self.write_config("/index.html"))

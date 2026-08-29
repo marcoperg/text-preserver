@@ -14,7 +14,7 @@
     "sources"
   ],
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "capture_id": {
       "type": "string",
       "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-z0-9]{6,16}$"
@@ -55,7 +55,19 @@
     "sourceResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["source_id", "required", "status", "started_at"],
+      "required": [
+        "source_id",
+        "required",
+        "status",
+        "started_at",
+        "ended_at",
+        "exit_code",
+        "downloaded_files",
+        "downloaded_bytes",
+        "payloads",
+        "warnings",
+        "error"
+      ],
       "properties": {
         "source_id": { "type": "string" },
         "required": { "type": "boolean" },
@@ -78,12 +90,15 @@
         "downloaded_files": {
           "type": "integer",
           "minimum": 0,
-          "description": "Files retained in the access mirror; zero for WARC-only captures."
+          "description": "Compatibility alias for payloads.mirror.files; zero for WARC-only captures."
         },
         "downloaded_bytes": {
           "type": "integer",
           "minimum": 0,
-          "description": "Bytes retained in the access mirror; zero for WARC-only captures."
+          "description": "Compatibility alias for payloads.mirror.bytes; zero for WARC-only captures."
+        },
+        "payloads": {
+          "$ref": "#/$defs/payloads"
         },
         "warnings": {
           "type": "array",
@@ -94,6 +109,69 @@
             { "type": "string" },
             { "type": "null" }
           ]
+        }
+      }
+    },
+    "payloads": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mirror", "warc"],
+      "properties": {
+        "mirror": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["files", "bytes"],
+          "properties": {
+            "files": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Retained regular files in the access mirror."
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Bytes in retained regular access-mirror files."
+            }
+          }
+        },
+        "warc": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "files",
+            "bytes",
+            "cdx_files",
+            "indexed_records",
+            "has_response_or_resource"
+          ],
+          "properties": {
+            "files": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Retained regular WARC container files, excluding CDX and temporary files."
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Bytes in retained WARC container files, excluding CDX and temporary files."
+            },
+            "cdx_files": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Retained regular GNU Wget CDX files."
+            },
+            "indexed_records": {
+              "oneOf": [
+                { "type": "integer", "minimum": 0 },
+                { "type": "null" }
+              ],
+              "description": "Non-header GNU Wget CDX records, or null when no safely readable CDX is available."
+            },
+            "has_response_or_resource": {
+              "type": "boolean",
+              "description": "Whether CDX records or bounded WARC inspection provide evidence of a response or resource record."
+            }
+          }
         }
       }
     }

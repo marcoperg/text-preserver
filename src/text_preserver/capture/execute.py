@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import fcntl
+import gzip
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ import stat
 import subprocess
 import sys
 import threading
+import zlib
 from types import MappingProxyType
 from typing import Any, Iterator, Mapping, Sequence
 
@@ -32,6 +34,17 @@ from text_preserver.recipe_bundle import (
     scan_declared_assets,
     scan_recipe_directory,
 )
+
+
+CAPTURE_MANIFEST_SCHEMA_VERSION = 2
+MAX_CDX_FILES = 1_000
+MAX_CDX_FILE_BYTES = 512 * 1024 * 1024
+MAX_CDX_TOTAL_BYTES = 1024 * 1024 * 1024
+MAX_CDX_LINE_BYTES = 1024 * 1024
+MAX_CDX_RECORDS = 10_000_000
+MAX_WARC_INSPECTION_FILES = 256
+MAX_WARC_INSPECTION_BYTES_PER_FILE = 1024 * 1024
+MAX_WARC_INSPECTION_BYTES_TOTAL = 64 * 1024 * 1024
 
 
 class CaptureExecutionError(RuntimeError):
@@ -181,7 +194,7 @@ def _execute_plan(
 ) -> CaptureResult:
     started_at = _utc_now()
     capture_metadata: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": CAPTURE_MANIFEST_SCHEMA_VERSION,
         "capture_id": plan.capture_id,
         "collection_id": plan.collection_id,
         "status": "running",
@@ -218,8 +231,13 @@ def _execute_plan(
             source = source_by_id[command.source_id]
             try:
                 result = _execute_source(command, source)
+            except _SourceInterrupted:
+                raise
+            except KeyboardInterrupt:
+                result = _interrupted_source_result(source, command.working_directory)
+                raise _SourceInterrupted(result)
             except OSError as exc:
-                result = _failed_source_result(source, str(exc))
+                result = _failed_source_result(source, str(exc), command.working_directory)
             results.append(result)
             capture_metadata["sources"] = results
             _write_json(capture_path, capture_metadata)
@@ -300,6 +318,7 @@ def _execute_source(command: WgetCommand, source: SourceConfig) -> dict[str, Any
         "exit_code": None,
         "downloaded_files": 0,
         "downloaded_bytes": 0,
+        "payloads": _empty_payloads(),
         "warnings": [],
         "error": None,
     }
@@ -311,19 +330,27 @@ def _execute_source(command: WgetCommand, source: SourceConfig) -> dict[str, Any
             result["warnings"].append(process.stderr.strip())
     except KeyboardInterrupt:
         result["status"] = "interrupted"
+        _record_payloads(result, source_root)
         result["ended_at"] = _utc_now()
         _write_json(result_path, result)
         raise _SourceInterrupted(result)
     except OSError as exc:
-        result["status"] = "failed"
         result["error"] = str(exc)
+        result["status"] = (
+            "partial" if _record_payloads(result, source_root) else "failed"
+        )
     else:
-        files, size = _download_counts(source_root / "mirror")
-        result["downloaded_files"] = files
-        result["downloaded_bytes"] = size
+        has_payload = _record_payloads(result, source_root)
         if process.returncode in command.success_exit_codes:
-            result["status"] = "complete"
-        elif files:
+            if has_payload:
+                result["status"] = "complete"
+            else:
+                result["status"] = "failed"
+                result["error"] = (
+                    f"GNU Wget exited with accepted status {process.returncode} but retained "
+                    "no mirror files or WARC response/resource evidence"
+                )
+        elif has_payload:
             result["status"] = "partial"
         else:
             result["status"] = "failed"
@@ -368,9 +395,7 @@ def _aggregate_status(results: Sequence[Mapping[str, Any]]) -> str:
     if required_failures:
         if any(result["status"] == "partial" for result in required_failures):
             return "partial"
-        has_content = any(
-            result["downloaded_files"] or result["downloaded_bytes"] for result in results
-        )
+        has_content = any(_has_substantive_payload(result) for result in results)
         return "partial" if has_content else "failed"
     if any(result["status"] != "complete" for result in results):
         return "complete_with_warnings"
@@ -517,9 +542,13 @@ def _validated_wget() -> tuple[str, str]:
     return str(Path(executable).resolve()), identity[0]
 
 
-def _failed_source_result(source: SourceConfig, error: str) -> dict[str, Any]:
+def _failed_source_result(
+    source: SourceConfig,
+    error: str,
+    source_root: Path | None = None,
+) -> dict[str, Any]:
     now = _utc_now()
-    return {
+    result: dict[str, Any] = {
         "source_id": source.id,
         "required": source.required,
         "status": "failed",
@@ -528,16 +557,285 @@ def _failed_source_result(source: SourceConfig, error: str) -> dict[str, Any]:
         "exit_code": None,
         "downloaded_files": 0,
         "downloaded_bytes": 0,
+        "payloads": _empty_payloads(),
         "warnings": [],
         "error": error,
     }
+    if source_root is not None:
+        if _record_payloads(result, source_root):
+            result["status"] = "partial"
+    return result
 
 
-def _download_counts(root: Path) -> tuple[int, int]:
-    if not root.exists():
-        return 0, 0
-    files = [path for path in root.rglob("*") if path.is_file()]
-    return len(files), sum(path.stat().st_size for path in files)
+def _interrupted_source_result(source: SourceConfig, source_root: Path) -> dict[str, Any]:
+    result = _failed_source_result(source, "", source_root)
+    result["status"] = "interrupted"
+    result["error"] = None
+    return result
+
+
+def _empty_payloads() -> dict[str, Any]:
+    return {
+        "mirror": {"files": 0, "bytes": 0},
+        "warc": {
+            "files": 0,
+            "bytes": 0,
+            "cdx_files": 0,
+            "indexed_records": None,
+            "has_response_or_resource": False,
+        },
+    }
+
+
+def _record_payloads(result: dict[str, Any], source_root: Path) -> bool:
+    payloads, warnings = _measure_payloads(source_root)
+    result["payloads"] = payloads
+    # Persisted/API compatibility aliases for access-mirror accounting only.
+    result["downloaded_files"] = payloads["mirror"]["files"]
+    result["downloaded_bytes"] = payloads["mirror"]["bytes"]
+    result["warnings"].extend(warnings)
+    return _has_substantive_payload(result)
+
+
+def _has_substantive_payload(result: Mapping[str, Any]) -> bool:
+    payloads = result.get("payloads")
+    if isinstance(payloads, Mapping):
+        mirror = payloads.get("mirror")
+        warc = payloads.get("warc")
+        return bool(
+            (isinstance(mirror, Mapping) and mirror.get("files"))
+            or (
+                isinstance(warc, Mapping)
+                and warc.get("has_response_or_resource") is True
+            )
+        )
+    # Immutable schema-v1 captures have only these mirror counters.
+    return bool(result.get("downloaded_files") or result.get("downloaded_bytes"))
+
+
+def _measure_payloads(source_root: Path) -> tuple[dict[str, Any], list[str]]:
+    payloads = _empty_payloads()
+    mirror_files, mirror_warnings = _scan_regular_files(source_root / "mirror")
+    warc_files, warc_warnings = _scan_regular_files(source_root / "warc")
+    warnings = mirror_warnings + warc_warnings
+
+    payloads["mirror"] = {
+        "files": len(mirror_files),
+        "bytes": sum(size for _relative, _path, size in mirror_files),
+    }
+    retained_warc_files = [
+        item for item in warc_files if not item[0].parts or item[0].parts[0] != "tmp"
+    ]
+    containers = [
+        item
+        for item in retained_warc_files
+        if item[0].name.lower().endswith((".warc", ".warc.gz"))
+    ]
+    cdx_files = [
+        item for item in retained_warc_files if item[0].name.lower().endswith(".cdx")
+    ]
+    warc_payload = payloads["warc"]
+    warc_payload["files"] = len(containers)
+    warc_payload["bytes"] = sum(size for _relative, _path, size in containers)
+    warc_payload["cdx_files"] = len(cdx_files)
+
+    indexed_records, cdx_warnings = _indexed_record_count(cdx_files)
+    warnings.extend(cdx_warnings)
+    warc_payload["indexed_records"] = indexed_records
+    if indexed_records is not None:
+        warc_payload["has_response_or_resource"] = bool(containers and indexed_records > 0)
+        if indexed_records > 0 and not containers:
+            warnings.append("WARC CDX records retained without a WARC container")
+    elif containers:
+        evidence, inspection_warnings = _inspect_warc_containers(containers)
+        warc_payload["has_response_or_resource"] = evidence
+        warnings.extend(inspection_warnings)
+    return payloads, warnings
+
+
+def _scan_regular_files(root: Path) -> tuple[list[tuple[Path, Path, int]], list[str]]:
+    files: list[tuple[Path, Path, int]] = []
+    warnings: list[str] = []
+    try:
+        root_info = root.lstat()
+    except FileNotFoundError:
+        return files, warnings
+    except OSError as exc:
+        return files, [f"cannot inspect payload path {root}: {exc}"]
+    if stat.S_ISLNK(root_info.st_mode):
+        return files, [f"unsafe payload symlink ignored: {root}"]
+    if not stat.S_ISDIR(root_info.st_mode):
+        return files, [f"unsafe non-directory payload root ignored: {root}"]
+
+    pending = [(root, Path())]
+    while pending:
+        directory, relative_directory = pending.pop()
+        try:
+            with os.scandir(directory) as entries:
+                children = sorted(entries, key=lambda entry: entry.name, reverse=True)
+        except OSError as exc:
+            warnings.append(f"cannot inspect payload directory {directory}: {exc}")
+            continue
+        for entry in children:
+            path = Path(entry.path)
+            relative = relative_directory / entry.name
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                warnings.append(f"cannot inspect payload path {path}: {exc}")
+                continue
+            if stat.S_ISREG(info.st_mode):
+                files.append((relative, path, info.st_size))
+            elif stat.S_ISDIR(info.st_mode):
+                pending.append((path, relative))
+            elif stat.S_ISLNK(info.st_mode):
+                warnings.append(f"unsafe payload symlink ignored: {path}")
+            else:
+                warnings.append(f"unsafe special payload file ignored: {path}")
+    files.sort(key=lambda item: item[0].as_posix())
+    return files, warnings
+
+
+def _indexed_record_count(
+    cdx_files: Sequence[tuple[Path, Path, int]],
+) -> tuple[int | None, list[str]]:
+    if not cdx_files:
+        return None, []
+    if len(cdx_files) > MAX_CDX_FILES:
+        return None, [f"WARC CDX file count exceeds safety limit ({MAX_CDX_FILES})"]
+    if any(size > MAX_CDX_FILE_BYTES for _relative, _path, size in cdx_files):
+        return None, [f"WARC CDX file exceeds safety limit ({MAX_CDX_FILE_BYTES} bytes)"]
+    if sum(size for _relative, _path, size in cdx_files) > MAX_CDX_TOTAL_BYTES:
+        return None, [f"WARC CDX bytes exceed safety limit ({MAX_CDX_TOTAL_BYTES})"]
+
+    total = 0
+    warnings: list[str] = []
+    for relative, path, _size in cdx_files:
+        try:
+            count = _count_cdx_records(path)
+        except (OSError, ValueError) as exc:
+            warnings.append(f"cannot inspect WARC CDX {relative.as_posix()}: {exc}")
+            return None, warnings
+        total += count
+        if total > MAX_CDX_RECORDS:
+            return None, [f"WARC CDX record count exceeds safety limit ({MAX_CDX_RECORDS})"]
+    return total, warnings
+
+
+def _count_cdx_records(path: Path) -> int:
+    records = 0
+    saw_header = False
+    with _open_regular_binary(path) as (stream, size):
+        if size > MAX_CDX_FILE_BYTES:
+            raise ValueError(f"file exceeds safety limit ({MAX_CDX_FILE_BYTES} bytes)")
+        while True:
+            line = stream.readline(MAX_CDX_LINE_BYTES + 1)
+            if not line:
+                break
+            if len(line) > MAX_CDX_LINE_BYTES:
+                raise ValueError(f"line exceeds safety limit ({MAX_CDX_LINE_BYTES} bytes)")
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith(b"CDX "):
+                saw_header = True
+                continue
+            if not saw_header:
+                raise ValueError("missing GNU Wget CDX header")
+            records += 1
+            if records > MAX_CDX_RECORDS:
+                raise ValueError(f"record count exceeds safety limit ({MAX_CDX_RECORDS})")
+    if not saw_header:
+        raise ValueError("missing GNU Wget CDX header")
+    return records
+
+
+@contextmanager
+def _open_regular_binary(path: Path) -> Iterator[tuple[Any, int]]:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(f"unsafe non-regular file: {path}")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            yield stream, info.st_size
+    finally:
+        os.close(descriptor)
+
+
+def _inspect_warc_containers(
+    containers: Sequence[tuple[Path, Path, int]],
+) -> tuple[bool, list[str]]:
+    warnings: list[str] = []
+    inspected_bytes = 0
+    for index, (relative, path, _size) in enumerate(containers):
+        if index >= MAX_WARC_INSPECTION_FILES:
+            warnings.append(
+                f"bounded WARC inspection stopped after {MAX_WARC_INSPECTION_FILES} files"
+            )
+            break
+        remaining = MAX_WARC_INSPECTION_BYTES_TOTAL - inspected_bytes
+        if remaining <= 0:
+            warnings.append(
+                f"bounded WARC inspection stopped after {MAX_WARC_INSPECTION_BYTES_TOTAL} bytes"
+            )
+            break
+        limit = min(MAX_WARC_INSPECTION_BYTES_PER_FILE, remaining)
+        try:
+            data = _read_warc_prefix(path, limit)
+        except (EOFError, gzip.BadGzipFile, OSError, ValueError, zlib.error) as exc:
+            warnings.append(f"cannot inspect WARC {relative.as_posix()}: {exc}")
+            continue
+        inspected_bytes += len(data)
+        if _warc_prefix_has_response_or_resource(data):
+            return True, warnings
+    return False, warnings
+
+
+def _read_warc_prefix(path: Path, limit: int) -> bytes:
+    with _open_regular_binary(path) as (stream, _size):
+        if path.name.lower().endswith(".gz"):
+            with gzip.GzipFile(fileobj=stream) as compressed:
+                return compressed.read(limit)
+        return stream.read(limit)
+
+
+def _warc_prefix_has_response_or_resource(data: bytes) -> bool:
+    position = 0
+    while position < len(data):
+        while data[position : position + 2] == b"\r\n":
+            position += 2
+        while data[position : position + 1] == b"\n":
+            position += 1
+        if not data[position:].startswith(b"WARC/"):
+            return False
+        crlf_end = data.find(b"\r\n\r\n", position)
+        lf_end = data.find(b"\n\n", position)
+        candidates = [value for value in (crlf_end, lf_end) if value >= 0]
+        if not candidates:
+            return False
+        header_end = min(candidates)
+        separator_size = 4 if header_end == crlf_end else 2
+        headers: dict[bytes, bytes] = {}
+        for line in data[position:header_end].splitlines()[1:]:
+            name, separator, value = line.partition(b":")
+            if separator:
+                headers[name.strip().lower()] = value.strip().lower()
+        if headers.get(b"warc-type") in {b"response", b"resource"}:
+            return True
+        try:
+            content_length = int(headers[b"content-length"])
+        except (KeyError, ValueError):
+            return False
+        if content_length < 0:
+            return False
+        position = header_end + separator_size + content_length
+    return False
 
 
 def _write_json(path: Path, value: Any) -> None:
