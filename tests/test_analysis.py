@@ -12,6 +12,7 @@ import zipfile
 
 from text_preserver.analysis import (
     AnalysisError,
+    _load_adapter,
     analyze_preservation,
     build_static_reader,
     current_reader_index,
@@ -34,6 +35,7 @@ class PreservationAnalysisTests(unittest.TestCase):
         recipe_root = self.root / "recipe"
         recipe_root.mkdir()
         shutil.copyfile(ETCSL_RECIPE / "inventory.py", recipe_root / "inventory.py")
+        shutil.copyfile(ETCSL_RECIPE / "reader.py", recipe_root / "reader.py")
         (recipe_root / "collection.toml").write_text(
             """
 recipe_api = 1
@@ -44,6 +46,7 @@ title = "ETCSL Fixture"
 
 [collection.analysis]
 inventory_adapter = "inventory.py"
+reader_adapter = "reader.py"
 reader_source = "ota-dataset"
 expected_work_count = 4
 required_representation_kinds = ["transliteration"]
@@ -699,6 +702,30 @@ def analyze_capture(capture_directory, **kwargs):
             rebuilt.index_path.resolve(),
         )
 
+    def test_adapter_relative_imports_are_directory_scoped_and_reloaded(self) -> None:
+        first = self.root / "first-recipe"
+        second = self.root / "second-recipe"
+        first.mkdir()
+        second.mkdir()
+        adapter_source = "from .inventory import VALUE\n"
+        for directory, value in ((first, "first"), (second, "other")):
+            (directory / "reader.py").write_text(adapter_source, encoding="utf-8")
+            (directory / "inventory.py").write_text(
+                f"VALUE = {value!r}\n",
+                encoding="utf-8",
+            )
+
+        first_adapter, _source = _load_adapter(first / "reader.py")
+        second_adapter, _source = _load_adapter(second / "reader.py")
+        (first / "inventory.py").write_text("VALUE = 'reloaded'\n", encoding="utf-8")
+        reloaded_adapter, _source = _load_adapter(first / "reader.py")
+
+        self.assertEqual(first_adapter.VALUE, "first")
+        self.assertEqual(second_adapter.VALUE, "other")
+        self.assertEqual(reloaded_adapter.VALUE, "reloaded")
+        self.assertFalse((first / "__pycache__").exists())
+        self.assertFalse((second / "__pycache__").exists())
+
     def test_current_bundle_digest_is_recorded_in_reader_identity(self) -> None:
         sibling = self.root / "recipe/template.txt"
         sibling.write_text("first", encoding="utf-8")
@@ -717,7 +744,7 @@ def analyze_capture(capture_directory, **kwargs):
 
     def test_builds_streaming_static_reader(self) -> None:
         self.create_capture()
-        (self.root / "recipe/inventory.py").write_text(
+        (self.root / "recipe/reader.py").write_text(
             """
 def write_static_reader(capture_directory, *, output_directory, expected_work_count):
     works = output_directory / "works"
@@ -747,7 +774,7 @@ def write_static_reader(capture_directory, *, output_directory, expected_work_co
 
     def test_streaming_reader_rejects_reserved_metadata(self) -> None:
         self.create_capture()
-        (self.root / "recipe/inventory.py").write_text(
+        (self.root / "recipe/reader.py").write_text(
             """
 def write_static_reader(capture_directory, *, output_directory, expected_work_count):
     (output_directory / "index.html").write_text("ok", encoding="utf-8")
@@ -773,7 +800,7 @@ def write_static_reader(capture_directory, *, output_directory, expected_work_co
     def test_streaming_reader_rejects_hard_link_to_capture(self) -> None:
         self.create_capture()
         capture_mode = (self.capture / "capture.json").stat().st_mode
-        (self.root / "recipe/inventory.py").write_text(
+        (self.root / "recipe/reader.py").write_text(
             """
 import os
 
@@ -824,7 +851,7 @@ def write_static_reader(capture_directory, *, output_directory, expected_work_co
 
     def test_reader_rejects_unsafe_adapter_output_path(self) -> None:
         self.create_capture()
-        (self.root / "recipe/inventory.py").write_text(
+        (self.root / "recipe/reader.py").write_text(
             """
 def render_static_reader(capture_directory, **kwargs):
     return {"status": "complete", "files": {"index.html": "ok", "../escape": "bad"}}
@@ -843,7 +870,7 @@ def render_static_reader(capture_directory, **kwargs):
 
     def test_reader_detects_adapter_mutation_of_capture(self) -> None:
         self.create_capture()
-        (self.root / "recipe/inventory.py").write_text(
+        (self.root / "recipe/reader.py").write_text(
             """
 def render_static_reader(capture_directory, **kwargs):
     (capture_directory / "capture.json").write_text("{}", encoding="utf-8")
@@ -877,7 +904,7 @@ def render_static_reader(capture_directory, **kwargs):
         config = load_config(self.config_path)
         complete = build_static_reader(config, "etcsl-fixture", self.capture)
         previous_index = complete.index_path.resolve()
-        (self.root / "recipe/inventory.py").write_text(
+        (self.root / "recipe/reader.py").write_text(
             """
 def render_static_reader(capture_directory, **kwargs):
     return {

@@ -1,30 +1,23 @@
 from __future__ import annotations
 
-import importlib.util
 import hashlib
 import json
 from pathlib import Path
 import shutil
-import sys
 import tempfile
 import unittest
 import xml.etree.ElementTree as ElementTree
 import zipfile
 
 from text_preserver.capture import plan_capture
+from text_preserver.analysis import _load_adapter
 from text_preserver.config import load_config
 
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
 RECIPE_ROOT = REPOSITORY_ROOT / "collections/gretil"
-SPEC = importlib.util.spec_from_file_location(
-    "gretil_inventory",
-    RECIPE_ROOT / "inventory.py",
-)
-assert SPEC is not None and SPEC.loader is not None
-inventory = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = inventory
-SPEC.loader.exec_module(inventory)
+inventory, _INVENTORY_SOURCE = _load_adapter(RECIPE_ROOT / "inventory.py")
+reader, _READER_SOURCE = _load_adapter(RECIPE_ROOT / "reader.py")
 
 
 class GretilInventoryTests(unittest.TestCase):
@@ -228,18 +221,18 @@ class GretilInventoryTests(unittest.TestCase):
             self.assertEqual(report["dictionaries"]["count"], 21)
             self.assertEqual(report["bulk_tei"]["count"], 3)
 
-            reader = Path(directory) / "reader"
-            reader_payload = inventory.write_static_reader(
+            reader_output = Path(directory) / "reader"
+            reader_payload = reader.write_static_reader(
                 capture,
-                output_directory=reader,
+                output_directory=reader_output,
                 expected_work_count=3,
             )
             self.assertEqual(reader_payload["status"], "complete_with_warnings")
             self.assertEqual(reader_payload["summary"]["work_count"], 3)
-            self.assertEqual(len(list((reader / "works").glob("*.html"))), 3)
-            self.assertIn(self.expected_ids[0], (reader / "index.html").read_text())
-            self.assertTrue((reader / "about.html").is_file())
-            self.assertNotIn("<script", (reader / "index.html").read_text())
+            self.assertEqual(len(list((reader_output / "works").glob("*.html"))), 3)
+            self.assertIn(self.expected_ids[0], (reader_output / "index.html").read_text())
+            self.assertTrue((reader_output / "about.html").is_file())
+            self.assertNotIn("<script", (reader_output / "index.html").read_text())
 
             with zipfile.ZipFile(
                 bulk / inventory.EXPECTED_BULK_PACKAGES[0],
@@ -270,7 +263,7 @@ class GretilInventoryTests(unittest.TestCase):
 """.strip()
         )
 
-        rendered = inventory._render_tei_element(element)
+        rendered = reader._render_tei_element(element)
 
         self.assertIn("before &lt;unsafe&gt;", rendered)
         self.assertIn("inserted", rendered)
@@ -291,7 +284,7 @@ class GretilInventoryTests(unittest.TestCase):
 </availability>
 """.strip()
         )
-        rights = inventory._reader_details("Availability", availability)
+        rights = reader._reader_details("Availability", availability)
         self.assertIn("status: restricted", rights)
         self.assertIn("licence target: https://example.org/licence", rights)
 
@@ -302,7 +295,7 @@ class GretilInventoryTests(unittest.TestCase):
 </lg>
 """.strip()
         )
-        block = inventory._render_tei_element(line_group)
+        block = reader._render_tei_element(line_group)
         self.assertIn("line-group rend-bold", block)
         self.assertIn("xml:id: verse-1", block)
         self.assertIn("resp: #VGA", block)
@@ -315,7 +308,10 @@ class GretilInventoryTests(unittest.TestCase):
         plan = plan_capture(config, "gretil")
 
         self.assertEqual(collection.analysis["expected_work_count"], 801)
+        self.assertEqual(collection.analysis["reader_adapter"], "reader.py")
         self.assertEqual(collection.analysis["reader_source"], "bulk-packages")
+        self.assertFalse(hasattr(inventory, "write_static_reader"))
+        self.assertTrue(callable(reader.write_static_reader))
         self.assertEqual(
             [source.id for source in collection.sources],
             ["current-register", "bulk-packages", "dictionaries", "frozen-register"],

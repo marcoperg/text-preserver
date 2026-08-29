@@ -19,6 +19,7 @@ limit_rate = "2M"
 
 [collection.analysis]
 inventory_adapter = "inventory.py"
+reader_adapter = "reader.py"
 reader_source = "bulk-packages"
 expected_work_count = 801
 required_representation_kinds = ["tei"]

@@ -135,6 +135,17 @@ allowed_hosts = ["example.org"]
         with self.assertRaisesRegex(ConfigError, "unknown source ID 'missing'"):
             load_config(self.write_config(invalid))
 
+    def test_loads_explicit_reader_adapter(self) -> None:
+        document = VALID_CONFIG.replace(
+            "[[collections.sources]]",
+            '[collections.analysis]\nreader_adapter = "reader.py"\n\n[[collections.sources]]',
+            1,
+        )
+
+        collection = load_config(self.write_config(document)).collections[0]
+
+        self.assertEqual(collection.analysis["reader_adapter"], "reader.py")
+
     def test_rejects_nested_data_roots(self) -> None:
         invalid = VALID_CONFIG.replace(
             'derived_root = "./data/derived"',

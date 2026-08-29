@@ -448,7 +448,7 @@ def _preserve_recipe_bundle(
     base = collection.recipe_path.parent if collection.recipe_path else config.path.parent
     declared = tuple(
         value
-        for key in ("inventory_adapter", "normalizer", "ciao_rules")
+        for key in ("inventory_adapter", "reader_adapter", "normalizer", "ciao_rules")
         if isinstance((value := collection.analysis.get(key)), str)
     )
     try:

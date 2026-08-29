@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import importlib
+from importlib.machinery import ModuleSpec
 import json
 import os
 from pathlib import Path
@@ -570,7 +572,9 @@ def build_static_reader(
         collection_id,
         capture_path,
     )
-    adapter_value = collection.analysis.get("inventory_adapter")
+    adapter_value = collection.analysis.get("reader_adapter")
+    if adapter_value is None:
+        adapter_value = collection.analysis.get("inventory_adapter")
     if not isinstance(adapter_value, str):
         raise AnalysisError(f"collection {collection.id} has no reader adapter")
     adapter_path, adapter_source, recipe_bundle_identity = _adapter_path(
@@ -614,7 +618,7 @@ def build_static_reader(
             files, summary, warnings, status = _validate_reader_payload(payload, adapter_path)
         else:
             raise AnalysisError(
-                "inventory adapter does not export write_static_reader() or "
+                "reader adapter does not export write_static_reader() or "
                 f"render_static_reader(): {adapter_path}"
             )
 
@@ -916,7 +920,12 @@ def _current_recipe_identity(
         else:
             declared = (
                 value
-                for key in ("inventory_adapter", "normalizer", "ciao_rules")
+                for key in (
+                    "inventory_adapter",
+                    "reader_adapter",
+                    "normalizer",
+                    "ciao_rules",
+                )
                 if isinstance((value := collection.analysis.get(key)), str)
             )
             bundle = scan_declared_assets(base, declared)
@@ -1058,19 +1067,40 @@ def _validate_streamed_reader_tree(root: Path) -> tuple[int, int]:
 
 
 def _load_adapter(path: Path) -> tuple[ModuleType, bytes]:
-    identity = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
-    name = f"text_preserver_recipe_{identity}"
+    directory_identity = hashlib.sha256(
+        str(path.parent.resolve()).encode("utf-8")
+    ).hexdigest()[:16]
+    package_name = f"text_preserver_recipe_{directory_identity}"
+    module_identity = hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()[:16]
+    name = f"{package_name}.adapter_{module_identity}"
+    for loaded_name in tuple(sys.modules):
+        if loaded_name == package_name or loaded_name.startswith(f"{package_name}."):
+            sys.modules.pop(loaded_name, None)
+    importlib.invalidate_caches()
+    package = ModuleType(package_name)
+    package.__file__ = str(path.parent)
+    package.__package__ = package_name
+    package.__path__ = [str(path.parent)]  # type: ignore[attr-defined]
+    package.__spec__ = ModuleSpec(package_name, loader=None, is_package=True)
+    package.__spec__.submodule_search_locations = [str(path.parent)]
+    sys.modules[package_name] = package
     module = ModuleType(name)
     module.__file__ = str(path)
-    module.__package__ = ""
+    module.__package__ = package_name
     sys.modules[name] = module
+    previous_bytecode_setting = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
     try:
         source = path.read_bytes()
         code = compile(source, str(path), "exec")
         exec(code, module.__dict__)
     except Exception as exc:
-        sys.modules.pop(name, None)
-        raise AnalysisError(f"cannot load inventory adapter {path}: {exc}") from exc
+        for loaded_name in tuple(sys.modules):
+            if loaded_name == package_name or loaded_name.startswith(f"{package_name}."):
+                sys.modules.pop(loaded_name, None)
+        raise AnalysisError(f"cannot load adapter {path}: {exc}") from exc
+    finally:
+        sys.dont_write_bytecode = previous_bytecode_setting
     return module, source
 
 

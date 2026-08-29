@@ -895,7 +895,7 @@ recipes = ["public:etcsl"]
 
 `public:ID` references resolve recipes shipped with the source or installed distribution. Filesystem recipe paths are resolved relative to the operator configuration. An external recipe requires top-level `recipe_api = 1`, contains one `[collection]` table, and is otherwise validated with the same inheritance and strict-key rules as an inline `[[collections]]` table. Inline collections do not declare a recipe API.
 
-The external bundle boundary is the selected recipe file's parent directory. Capture recursively includes every bounded regular file, so TOML, adapter modules, fixtures, seeds, rules, templates, and README files remain available. Inline collections synthesize a bundle from only declared recipe-relative `inventory_adapter`, `normalizer`, and `ciao_rules` files rather than recursively copying the configuration directory. Both forms reject symlinks, special files, path escapes, more than 1,000 files, individual files over 16 MiB, or a total over 64 MiB. Only `__pycache__`, `.pyc`, `.pyo`, and `.DS_Store` are excluded as transient cache artifacts.
+The external bundle boundary is the selected recipe file's parent directory. Capture recursively includes every bounded regular file, so TOML, adapter modules, fixtures, seeds, rules, templates, and README files remain available. Inline collections synthesize a bundle from only declared recipe-relative `inventory_adapter`, `reader_adapter`, `normalizer`, and `ciao_rules` files rather than recursively copying the configuration directory. Both forms reject symlinks, special files, path escapes, more than 1,000 files, individual files over 16 MiB, or a total over 64 MiB. Only `__pycache__`, `.pyc`, `.pyo`, and `.DS_Store` are excluded as transient cache artifacts.
 
 Capture writes the files below `metadata/recipe-bundle/` and writes `metadata/recipe-bundle-manifest.json` with schema version, recipe API (null for inline configuration), collection ID, POSIX-sorted path/size/SHA-256 entries, and the SHA-256 of canonical JSON over those entries. The captured `recipe-bundle/collection.toml` is authoritative for an external recipe; `input-collection-recipe.toml` may also be retained as provenance.
 
@@ -992,6 +992,7 @@ quota = "500M"
 ```toml
 [collections.analysis]
 inventory_adapter = "collections/example-corpus/inventory.py"
+reader_adapter = "collections/example-corpus/reader.py"
 normalizer = "collections/example-corpus/normalize.py"
 ciao_rules = "collections/example-corpus/rules/preservation.pl"
 reader_source = "canonical-dataset"
@@ -1012,6 +1013,8 @@ source settings
 ```
 
 Collection-specific knowledge should live in recipes, adapters, and rules rather than in hard-coded branches in the generic engine.
+
+Under `recipe_api = 1`, `inventory_adapter` exports `analyze_capture(...)`. If present, `reader_adapter` exports `write_static_reader(...)` or `render_static_reader(...)`; otherwise reader generation uses `inventory_adapter` for legacy and modest recipes. Trusted recipe adapters may use explicit sibling imports for shared collection parsing and package checks. Those assumptions remain in the recipe bundle, not in generic analysis code.
 
 Configuration has one semantic authority: the dependency-free loader in `config.py`, which resolves inheritance and validates filesystem, URL/host, and referential constraints. JSON Schemas remain the portable structural description. A conformance suite passes representative valid and invalid raw documents through both validators so shared rules cannot drift unnoticed; semantic rules that depend on resolved defaults or local paths remain runtime-only by design.
 

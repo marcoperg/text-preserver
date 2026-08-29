@@ -436,6 +436,7 @@ def _load_analysis(value: Any, label: str) -> dict[str, Any]:
     table = _table(value, label)
     keys = {
         "inventory_adapter",
+        "reader_adapter",
         "normalizer",
         "ciao_rules",
         "expected_work_count",
@@ -445,7 +446,13 @@ def _load_analysis(value: Any, label: str) -> dict[str, Any]:
     }
     _only_keys(table, keys, label)
     result: dict[str, Any] = {}
-    for key in {"inventory_adapter", "normalizer", "ciao_rules", "reader_source"}:
+    for key in {
+        "inventory_adapter",
+        "reader_adapter",
+        "normalizer",
+        "ciao_rules",
+        "reader_source",
+    }:
         if key in table:
             result[key] = _string(table[key], f"{label}.{key}")
     if "expected_work_count" in table:

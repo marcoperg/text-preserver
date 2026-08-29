@@ -20,6 +20,7 @@ limit_rate = "250K"
 
 [collection.analysis]
 inventory_adapter = "inventory.py"
+reader_adapter = "reader.py"
 ciao_rules = "rules/preservation.pl"
 reader_source = "ota-dataset"
 expected_work_count = 394

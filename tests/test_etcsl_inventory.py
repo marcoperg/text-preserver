@@ -8,6 +8,8 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
+from text_preserver.analysis import _load_adapter
+
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
 RECIPE_ROOT = REPOSITORY_ROOT / "collections/etcsl"
@@ -16,6 +18,7 @@ assert SPEC is not None and SPEC.loader is not None
 inventory = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = inventory
 SPEC.loader.exec_module(inventory)
+reader, _READER_SOURCE = _load_adapter(RECIPE_ROOT / "reader.py")
 
 
 class EtcslInventoryTests(unittest.TestCase):
@@ -103,6 +106,9 @@ class EtcslInventoryTests(unittest.TestCase):
         self.assertTrue(any("etcsl.zip?sequence=11" in seed for seed in dataset.seeds))
         self.assertFalse(any(seed.endswith("/allzip") for seed in dataset.seeds))
         self.assertEqual(collection.analysis["expected_work_count"], 394)
+        self.assertEqual(collection.analysis["reader_adapter"], "reader.py")
+        self.assertFalse(hasattr(inventory, "render_static_reader"))
+        self.assertTrue(callable(reader.render_static_reader))
 
     def test_finds_complete_ota_package_with_query_suffixed_names(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -174,7 +180,7 @@ class EtcslInventoryTests(unittest.TestCase):
                 inventory._analyze_zip(path, 1)
 
     def test_reader_preserves_unknown_entities_and_escapes_markup(self) -> None:
-        root, unresolved = inventory._parse_reader_xml(
+        root, unresolved = reader._parse_reader_xml(
             """
 <TEI.2 id="t.1.1.1"><teiHeader><fileDesc><titleStmt>
 <title>&nosuch;&lt;script&gt;alert(1)&lt;/script&gt; -- an English prose translation</title>
@@ -183,8 +189,8 @@ class EtcslInventoryTests(unittest.TestCase):
             "fixture.xml",
         )
 
-        title = inventory._reader_title(root, "1.1.1")
-        page = inventory._render_work_page(
+        title = reader._reader_title(root, "1.1.1")
+        page = reader._render_work_page(
             "1.1.1",
             title,
             {"translation": root, "translation_path": "fixture.xml"},
@@ -199,7 +205,7 @@ class EtcslInventoryTests(unittest.TestCase):
         self.assertNotIn("<script>", page)
 
     def test_reader_resolves_etcsl_entities_before_html_entities(self) -> None:
-        root, unresolved = inventory._parse_reader_xml(
+        root, unresolved = reader._parse_reader_xml(
             """
 <TEI.2 id="t.1.1.1"><teiHeader><fileDesc><titleStmt>
 <title>&C;ama&c;-&t;ab to Ilak-ni&aleph;id -- an English prose translation</title>
@@ -210,9 +216,9 @@ class EtcslInventoryTests(unittest.TestCase):
             "fixture.xml",
         )
 
-        page = inventory._render_work_page(
+        page = reader._render_work_page(
             "1.1.1",
-            inventory._reader_title(root, "1.1.1"),
+            reader._reader_title(root, "1.1.1"),
             {"translation": root, "translation_path": "fixture.xml"},
             "20260827T120000Z-a1b2c3",
             "0" * 64,
@@ -245,7 +251,7 @@ class EtcslInventoryTests(unittest.TestCase):
 """.strip(),
                 )
 
-            payload = inventory.render_static_reader(capture, expected_work_count=1)
+            payload = reader.render_static_reader(capture, expected_work_count=1)
             page = payload["files"]["works/1.1.1.html"]
 
             self.assertEqual(payload["status"], "incomplete")
@@ -269,7 +275,7 @@ class EtcslInventoryTests(unittest.TestCase):
                     '<TEI.2 id="t.1.1.1"><text><body><p n="1">Text.</p></body></text></TEI.2>',
                 )
 
-            payload = inventory.render_static_reader(capture, expected_work_count=1)
+            payload = reader.render_static_reader(capture, expected_work_count=1)
 
             self.assertEqual(payload["status"], "incomplete")
             self.assertTrue(
@@ -293,7 +299,7 @@ class EtcslInventoryTests(unittest.TestCase):
                     '<TEI.2 id="t.0.1.1"><text><body><p n="1">Text.</p></body></text></TEI.2>',
                 )
 
-            payload = inventory.render_static_reader(capture, expected_work_count=2)
+            payload = reader.render_static_reader(capture, expected_work_count=2)
 
             self.assertEqual(payload["status"], "incomplete")
 

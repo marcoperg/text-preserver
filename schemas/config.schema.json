@@ -135,6 +135,7 @@
       "additionalProperties": false,
       "properties": {
         "inventory_adapter": { "type": "string", "minLength": 1 },
+        "reader_adapter": { "type": "string", "minLength": 1 },
         "normalizer": { "type": "string", "minLength": 1 },
         "ciao_rules": { "type": "string", "minLength": 1 },
         "reader_source": { "$ref": "#/$defs/safeId" },

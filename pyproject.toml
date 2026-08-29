@@ -41,6 +41,7 @@ where = ["src"]
   "collections/etcsl/README.md",
   "collections/etcsl/collection.toml",
   "collections/etcsl/inventory.py",
+  "collections/etcsl/reader.py",
 ]
 "share/text-preserver/collections/etcsl/fixtures" = [
   "collections/etcsl/fixtures/catalogue.html",
@@ -57,6 +58,7 @@ where = ["src"]
   "collections/gretil/README.md",
   "collections/gretil/collection.toml",
   "collections/gretil/inventory.py",
+  "collections/gretil/reader.py",
 ]
 "share/text-preserver/collections/gretil/fixtures" = [
   "collections/gretil/fixtures/catalogue.html",

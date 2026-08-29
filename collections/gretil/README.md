@@ -48,7 +48,7 @@ text-preserver analyze preservation gretil -c collections.toml
 text-preserver analyze preservation gretil /path/to/capture-a /path/to/capture-b -c collections.toml
 ```
 
-The adapter checks source outcomes, selected context assets, register representation counts and lineage gaps, the exact bulk-package and dictionary sets, frozen-register files, ZIP paths, entry counts, expansion limits, encryption, symlinks, compression ratios, CRCs, TEI roots, and internal `xml:id` values. It never extracts archive members. Seventeen reviewed package filenames use longer section-qualified identifiers than the register; those mappings are explicit, while one bulk-only record and one cross-package duplicate remain warnings rather than being silently discarded.
+The `inventory.py` adapter checks source outcomes, selected context assets, register representation counts and lineage gaps, the exact bulk-package and dictionary sets, frozen-register files, ZIP paths, entry counts, expansion limits, encryption, symlinks, compression ratios, CRCs, TEI roots, and internal `xml:id` values. It never extracts archive members. Seventeen reviewed package filenames use longer section-qualified identifiers than the register; those mappings are explicit, while one bulk-only record and one cross-package duplicate remain warnings rather than being silently discarded.
 
 `fixtures/reviewed-tei-ids.txt` was generated from the 1,033,721-byte `gretil.html` observed on 2026-08-28 with SHA-256 `4a510b91da2ddc98d341d3e161999f7be208dc0249faecff1735918a1945ec7f`. Tests require its 801 sorted identifiers to reproduce the adapter's baseline digest.
 
@@ -61,7 +61,7 @@ text-preserver derive reader gretil -c collections.toml
 text-preserver open reader gretil -c collections.toml
 ```
 
-The renderer uses `1_sanskr.zip` as the publisher's aggregate TEI container, requires all 801 reviewed register identifiers, and explicitly excludes the one bulk-only record. It parses and writes one work at a time so the complete corpus does not need to be held in memory. The resulting reader contains full text, selected TEI header metadata, exact item-level availability and source statements, language and category labels, filename/root/register identity mappings, capture provenance, and responsive previous/next navigation.
+The `reader.py` adapter uses `1_sanskr.zip` as the publisher's aggregate TEI container, requires all 801 reviewed register identifiers, and explicitly excludes the one bulk-only record. It parses and writes one work at a time so the complete corpus does not need to be held in memory. The resulting reader contains full text, selected TEI header metadata, exact item-level availability and source statements, language and category labels, filename/root/register identity mappings, capture provenance, and responsive previous/next navigation.
 
 Reader output is rebuildable derived data, not a new preservation master or a claim of collection-wide redistribution rights. It loads no scripts or remote resources. TEI mixed content, verse, page and line breaks, apparatus, supplied or unclear text, gaps, and common renditions remain visible; stand-off references and unrecognized source rendition tokens are retained as inert annotations rather than resolved externally.
 

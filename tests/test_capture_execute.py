@@ -399,9 +399,11 @@ class CaptureExecutionTests(unittest.TestCase):
     def test_failed_process_is_preserved_in_status_records(self) -> None:
         adapter = self.root / "inventory.py"
         adapter.write_text("def analyze_capture(*args, **kwargs): return {}\n", encoding="utf-8")
+        reader = self.root / "reader.py"
+        reader.write_text("def render_static_reader(*args, **kwargs): return {}\n", encoding="utf-8")
         invalid = VALID_CONFIG.replace(
             "[[collections.sources]]",
-            '[collections.analysis]\ninventory_adapter = "inventory.py"\n\n[[collections.sources]]',
+            '[collections.analysis]\ninventory_adapter = "inventory.py"\nreader_adapter = "reader.py"\n\n[[collections.sources]]',
             1,
         ).replace(
             'seeds = ["https://example.org/index.html"]',
@@ -449,6 +451,10 @@ class CaptureExecutionTests(unittest.TestCase):
         self.assertEqual(
             (result.capture_directory / "metadata/recipe-bundle/inventory.py").read_bytes(),
             adapter.read_bytes(),
+        )
+        self.assertEqual(
+            (result.capture_directory / "metadata/recipe-bundle/reader.py").read_bytes(),
+            reader.read_bytes(),
         )
         bundle_manifest = json.loads(
             (result.capture_directory / "metadata/recipe-bundle-manifest.json").read_text(
