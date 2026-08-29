@@ -103,7 +103,7 @@ def build_wget_command(
         argv.extend(
             (
                 f"--warc-file={warc_root / 'capture'}",
-                f"--warc-tempdir={warc_temp_root}",
+                f"--warc-tempdir={warc_temp_root.relative_to(source_root)}",
                 f"--warc-max-size={settings['warc_max_size']}",
             )
         )

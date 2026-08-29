@@ -36,6 +36,7 @@ class CapturePlanTests(unittest.TestCase):
         self.assertIn("--level=inf", command.argv)
         self.assertIn("--warc-cdx", command.argv)
         self.assertTrue(any(value.startswith("--warc-file=") for value in command.argv))
+        self.assertIn("--warc-tempdir=warc/tmp", command.argv)
         self.assertTrue(any(value.startswith("--hsts-file=") for value in command.argv))
         self.assertTrue(command.required)
         self.assertEqual(command.success_exit_codes, (0,))
