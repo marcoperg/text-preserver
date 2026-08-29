@@ -14,7 +14,7 @@ import secrets
 import shutil
 import stat
 import tempfile
-from typing import Any, Iterator, Mapping, NoReturn
+from typing import Any, Iterator, Mapping, NoReturn, Sequence
 
 from text_preserver.adapter_process import (
     AdapterLimits,
@@ -67,6 +67,13 @@ class ReaderResult:
             "current_reader_updated": self.current_reader_updated,
             "metadata": dict(self.metadata),
         }
+
+
+@dataclass(frozen=True)
+class CurrentReader:
+    collection_id: str
+    generation_directory: Path
+    metadata: Mapping[str, Any]
 
 
 def build_static_reader(
@@ -132,7 +139,14 @@ def build_static_reader(
         renderer_sha256 = adapter_digest(adapter_path)
     except (OSError, ValueError) as exc:
         raise AnalysisError(f"cannot verify reader adapter {adapter_path}: {exc}") from exc
-    adapter_limits = AdapterLimits(wall_seconds=120.0)
+    reader_timeout = collection.analysis.get("reader_timeout", 120.0)
+    if (
+        not isinstance(reader_timeout, (int, float))
+        or isinstance(reader_timeout, bool)
+        or not 1 <= reader_timeout <= 900
+    ):
+        raise AnalysisError(f"collection {collection.id} has an invalid reader timeout")
+    adapter_limits = AdapterLimits(wall_seconds=float(reader_timeout))
     execution_policy = execution_policy_identity("reader", adapter_limits)
     reader_support = (
         {
@@ -359,6 +373,26 @@ def current_reader_index(config: Config, collection_id: str) -> Path:
     return path
 
 
+def current_reader_generation(config: Config, collection_id: str) -> CurrentReader:
+    """Return one fully validated canonical reader generation for downstream access."""
+    collection = _find_collection(config, collection_id)
+    collection_root = config.project.derived_root / "collections" / collection.id
+    canonical = collection_root / "LATEST-READER"
+    if canonical.is_symlink() or not canonical.is_file():
+        raise AnalysisError(
+            f"collection {collection.id} has no canonical catalogue-compatible reader"
+        )
+    generation = _validated_current_reader_target(collection_root, require_pointer=True)
+    if generation is None:
+        raise AnalysisError(f"collection {collection.id} has no current derived reader")
+    metadata = _read_json(generation / "metadata.json", "current reader metadata")
+    if metadata.get("schema_version") != READER_SCHEMA_VERSION:
+        raise AnalysisError(
+            f"collection {collection.id} current reader is not catalogue-compatible"
+        )
+    return CurrentReader(collection.id, generation, metadata)
+
+
 def _read_capture_pointer(collection_root: Path, name: str) -> Path:
     pointer = collection_root / name
     if pointer.is_symlink() or not pointer.is_file():
@@ -454,6 +488,7 @@ def _validated_current_reader_target(
     canonical = collection_root / "LATEST-READER"
     canonical_present = canonical.is_symlink() or canonical.exists()
     if canonical_present:
+        _validate_reader_directory_chain(collection_root, ())
         if canonical.is_symlink() or not canonical.is_file():
             raise AnalysisError(f"current reader pointer is not a regular file: {canonical}")
         try:
@@ -471,6 +506,7 @@ def _validated_current_reader_target(
         ):
             raise AnalysisError(f"unsafe current reader pointer content: {canonical}")
         target = collection_root / relative
+        _validate_reader_directory_chain(collection_root, relative.parts[:-1])
         if target.is_symlink() or not target.is_dir():
             raise AnalysisError(f"current reader pointer target is unavailable: {canonical}")
         resolved = target.resolve()
@@ -501,10 +537,30 @@ def _validated_current_reader_target(
         if require_pointer and (current.exists() or current.is_symlink()):
             raise AnalysisError(f"current reader pointer is not a symlink: {current}")
         return None
+    _validate_reader_directory_chain(collection_root, ("captures",))
     resolved = current.resolve()
     if not resolved.is_relative_to(captures_root.resolve()):
         raise AnalysisError(f"current reader pointer escapes collection captures: {current}")
     return resolved
+
+
+def _validate_reader_directory_chain(
+    collection_root: Path,
+    relative_parts: Sequence[str],
+) -> None:
+    derived_root = collection_root.parent.parent
+    paths = [derived_root, collection_root.parent, collection_root]
+    current = collection_root
+    for part in relative_parts:
+        current /= part
+        paths.append(current)
+    for path in paths:
+        try:
+            info = path.lstat()
+        except OSError as exc:
+            raise AnalysisError(f"reader directory component is unavailable: {path}") from exc
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise AnalysisError(f"reader directory component is unsafe: {path}")
 
 
 def _validate_reader_payload(

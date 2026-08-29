@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ from text_preserver.access.reader_model import (
     access_id,
     access_json,
     access_segment_json,
+    load_access_collection,
     reader_model_identity,
     route_token,
     validate_access_indexes,
@@ -210,6 +212,32 @@ class ReaderModelTests(unittest.TestCase):
             (root / "segments.jsonl").write_text(line + line, encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "duplicate serialized"):
                 validate_access_indexes(root)
+
+    def test_strict_loader_rehydrates_only_canonical_access_documents(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "access.json"
+            path.write_text(access_json(self.fixture()), encoding="utf-8")
+
+            loaded = load_access_collection(root)
+
+            self.assertEqual(loaded, self.fixture())
+            malformed = access_document(self.fixture())
+            malformed["collection"]["unknown"] = True
+            path.write_text(json.dumps(malformed), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "collection fields"):
+                load_access_collection(root)
+
+    def test_strict_loader_rejects_hardlinked_access_document(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.json"
+            source.write_text(access_json(self.fixture()), encoding="utf-8")
+            (root / "reader").mkdir()
+            (root / "reader/access.json").hardlink_to(source)
+
+            with self.assertRaisesRegex(ValueError, "bounded regular file"):
+                load_access_collection(root / "reader")
 
 
 if __name__ == "__main__":

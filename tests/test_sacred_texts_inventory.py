@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from text_preserver.adapters import _load_adapter
 from text_preserver.preservation.capture import plan_capture
 from text_preserver.config import load_config
 from text_preserver.recipes import public_recipe_path
@@ -25,6 +26,7 @@ assert SPEC is not None and SPEC.loader is not None
 inventory = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = inventory
 SPEC.loader.exec_module(inventory)
+reader, _READER_SOURCE = _load_adapter(RECIPE_ROOT / "reader.py")
 
 
 class SacredTextsInventoryTests(unittest.TestCase):
@@ -104,6 +106,26 @@ class SacredTextsInventoryTests(unittest.TestCase):
             self.assertEqual(report["expected_work_count"], 0)
             self.assertEqual(report["publisher_media"]["preserved"], False)
 
+            with (
+                patch.object(reader.validator, "EXPECTED_IA_ARTIFACTS", artifacts),
+                patch.object(reader.validator, "EXPECTED_CDX_RECORD_COUNT", 2),
+            ):
+                payload = reader.render_static_reader(capture, expected_work_count=0)
+
+            self.assertEqual(payload["status"], "incomplete")
+            files = payload["files"]
+            page = files["index.html"]
+            access = json.loads(files["access.json"])
+            self.assertIn("Preservation status view", page)
+            self.assertIn("This collection is incomplete", page)
+            self.assertIn("10 exact downloads-page gzip payloads", page)
+            self.assertIn("Indexed WARC records", page)
+            self.assertIn("not works", page)
+            self.assertNotIn("<script", page)
+            self.assertEqual(access["collection"]["status"], "incomplete")
+            self.assertEqual(access["items"], [])
+            self.assertEqual(len(access["artifacts"]), 8)
+
     def test_public_recipe_builds_bounded_archive_plan(self) -> None:
         config = load_config(REPOSITORY_ROOT / "collections.example.toml")
         collection = next(item for item in config.collections if item.id == "sacred-texts")
@@ -116,6 +138,9 @@ class SacredTextsInventoryTests(unittest.TestCase):
 
         self.assertEqual(collection.analysis["expected_work_count"], 0)
         self.assertEqual(collection.analysis["prefer_preserved_adapter"], False)
+        self.assertEqual(collection.analysis["reader_adapter"], "reader.py")
+        self.assertEqual(collection.analysis["reader_source"], "internet-archive-2021")
+        self.assertEqual(collection.analysis["reader_timeout"], 600)
         self.assertEqual(
             [source.id for source in collection.sources],
             ["internet-archive-2021", "wayback-download-recovery"],

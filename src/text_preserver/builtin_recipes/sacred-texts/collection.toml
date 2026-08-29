@@ -20,6 +20,9 @@ limit_rate = "8M"
 
 [collection.analysis]
 validator_adapter = "validator.py"
+reader_adapter = "reader.py"
+reader_source = "internet-archive-2021"
+reader_timeout = 600
 expected_work_count = 0
 prefer_preserved_adapter = false
 required_representation_kinds = ["warc-record"]

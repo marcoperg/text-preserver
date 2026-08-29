@@ -53,6 +53,7 @@ PUBLIC_RECIPE_FILES = {
         "README.md",
         "collection.toml",
         "validator.py",
+        "reader.py",
         "seeds/internet-archive-2021.txt",
         "seeds/wayback-download-recovery.txt",
     },

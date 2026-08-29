@@ -626,9 +626,32 @@ representation. Occurrence suffixes keep links and identifiers distinct when sou
 files violate `xml:id` uniqueness without pretending those repeated values are unique.
 The parent validates referenced index existence, canonical JSON Lines records,
 representation membership, aggregate bounds, and global segment ID/route uniqueness
-before publishing a generation. Reader adapters receive a 120-second wall allowance;
-the subprocess memory, file-size, output-tree, network, and write-scope controls remain
-in force.
+before publishing a generation. Reader adapters receive a 120-second wall allowance by
+default. A recipe may declare a 1-900 second allowance, which is bound into the build
+identity; the subprocess memory, file-size, output-tree, network, and write-scope
+controls remain in force. Sacred Texts uses 600 seconds so its reviewed artifact SHA-1
+checks remain mandatory on the large WARC.
+
+Sacred Texts uses the same shell and model for a zero-item preservation-status view.
+It reports bounded WARC/CDX and recovery facts together with the missing official media
+and exact gzip gaps. Its reader status remains `incomplete`, so the capture-scoped
+generation is available for inspection but cannot advance the current-reader pointer.
+
+The common catalogue is a core-owned immutable derivative built with
+`text-preserver derive catalogue`. It strictly reloads canonical `access.json` from
+validated current reader generations, records unavailable configured collections
+without inventing items, and writes `index.html`, `catalogue.json`, and
+`catalogue.sqlite` below `derived/catalogue-generations/BUILD_KEY`. Its key binds exact
+reader generation/tree/access digests, the catalogue extractor, shared model and shell,
+and SQLite/FTS runtime identity. `LATEST-CATALOGUE` points to the latest usable snapshot;
+old snapshots retain links to the exact reader generations they indexed.
+
+SQLite FTS5 stores one searchable document per representation. The standard-library
+HTML extractor follows the representation fragment declared by the recipe, preserves
+collection-specific visible body text and Unicode diacritics, and excludes shell
+navigation, artifact links, citations, scripts, and styles. It does not infer segment
+text ranges from anchors. `text-preserver search` supports collection, language, kind,
+and item-type filters and resolves results back to immutable local reader files.
 
 ### Common model
 
@@ -885,12 +908,13 @@ text-preserver compare etcsl CAPTURE_A CAPTURE_B
 ### Derived catalogue and analysis
 
 ```bash
-text-preserver catalog build etcsl
-text-preserver normalize etcsl
+text-preserver derive reader etcsl
+text-preserver derive reader gretil
+text-preserver derive catalogue
+text-preserver open catalogue
 text-preserver validate etcsl
 text-preserver analyze preservation etcsl  # deprecated version-0.1 alias
-text-preserver analyze logic etcsl
-text-preserver search "kingship"
+text-preserver search '"divine kingship"' --collection etcsl
 ```
 
 ### Reader and workspace
@@ -1102,12 +1126,18 @@ data/
 │                           └── ...
 │
 ├── derived/
+│   ├── LATEST-CATALOGUE
+│   ├── catalogue-generations/
+│   │   └── BUILD_KEY/
+│   │       ├── index.html
+│   │       ├── catalogue.json
+│   │       ├── catalogue.sqlite
+│   │       └── metadata.json
 │   └── collections/
 │       └── etcsl/
 │           ├── reader -> captures/20260827T120000Z-a1b2c3/reader-generations/...
 │           ├── LATEST-READER
 │           ├── LATEST-VALIDATED
-│           ├── catalogue.sqlite
 │           ├── normalized/
 │           ├── passage-map.jsonl
 │           ├── facts/
@@ -1476,7 +1506,11 @@ Research functionality belongs downstream of successful preservation.
 - comparison of versions and captures;
 - navigation through explicit structural divisions.
 
-SQLite FTS5 is sufficient for the first full-text index.
+SQLite FTS5 implements the first full-text index at representation granularity. The
+index preserves Unicode distinctions with `unicode61 remove_diacritics 0`, records its
+engine/build identity, and is rebuilt from immutable reader outputs rather than treated
+as preservation evidence. Exact segment-level search remains deferred until recipes
+publish authoritative segment text boundaries.
 
 ### Semantic search
 
@@ -1919,10 +1953,9 @@ text-preserver/
 └── collections.example.toml
 ```
 
-`access/model.py` and `access/theme.py` are Phase 4 targets, not empty modules to
-create during the boundary move. Likewise, no `research/` package should exist until
-Phase 7 has a concrete feature. The built-in recipe location changes in Phase 3 when
-the project adopts `importlib.resources`.
+The Phase 4 access model, shell, catalogue, and FTS5 index are implemented under
+`text_preserver.access`. No `research/` package should exist until Phase 7 has a
+concrete feature. Built-in recipes are packaged through `importlib.resources`.
 
 ---
 

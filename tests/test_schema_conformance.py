@@ -150,10 +150,14 @@ user_agent = "text-preserver-test/1.0"
             ),
             format_checker=FormatChecker(),
         )
-        recipe_path = public_recipe_path("etcsl")
-        raw = tomllib.loads(recipe_path.read_text(encoding="utf-8"))
-
-        validator.validate(raw)
+        recipes = []
+        for collection_id in ("etcsl", "gretil", "sacred-texts"):
+            recipe_path = public_recipe_path(collection_id)
+            raw = tomllib.loads(recipe_path.read_text(encoding="utf-8"))
+            recipes.append(raw)
+            with self.subTest(collection_id=collection_id):
+                validator.validate(raw)
+        raw = recipes[0]
         invalid = dict(raw)
         invalid["collection"] = dict(raw["collection"])
         invalid["collection"]["analysis"] = dict(raw["collection"]["analysis"])

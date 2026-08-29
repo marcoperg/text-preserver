@@ -5,8 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
+import stat
 from typing import Any, Mapping
 from urllib.parse import quote, urlsplit
 
@@ -333,6 +335,81 @@ def access_segment_json(representation_id: str, segment: AccessSegment) -> str:
     ) + "\n"
 
 
+def load_access_collection(root: Path) -> AccessCollection:
+    """Load and fully revalidate one canonical on-disk access graph."""
+    path = root / "access.json"
+    try:
+        initial = path.lstat()
+    except OSError as exc:
+        raise ValueError("access.json is not a bounded regular file") from exc
+    if (
+        not stat.S_ISREG(initial.st_mode)
+        or initial.st_nlink != 1
+        or initial.st_size > MAX_ACCESS_JSON_BYTES
+    ):
+        raise ValueError("access.json is not a bounded regular file")
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            opened = os.fstat(stream.fileno())
+            if (opened.st_dev, opened.st_ino) != (initial.st_dev, initial.st_ino):
+                raise ValueError("access.json changed while opening")
+            source = stream.read()
+        final = path.lstat()
+        if (
+            final.st_dev,
+            final.st_ino,
+            final.st_size,
+            final.st_mtime_ns,
+        ) != (
+            initial.st_dev,
+            initial.st_ino,
+            initial.st_size,
+            initial.st_mtime_ns,
+        ):
+            raise ValueError("access.json changed while reading")
+        document = json.loads(source)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("access.json is not valid UTF-8 JSON") from exc
+    collection = access_collection_from_document(document)
+    if source != access_json(collection):
+        raise ValueError("access.json is not canonical for its declared schema")
+    return collection
+
+
+def access_collection_from_document(value: object) -> AccessCollection:
+    """Rehydrate a serialized graph and require the complete schema contract."""
+    document = _object_with_keys(
+        value,
+        {"schema_version", "collection", "items", "artifacts", "relations"},
+        "access document",
+    )
+    if document["schema_version"] != ACCESS_MODEL_SCHEMA_VERSION:
+        raise ValueError("unsupported access model schema")
+    collection_value = _object_with_keys(
+        document["collection"],
+        {"id", "label", "status", "route", "rights"},
+        "access collection",
+    )
+    artifacts = tuple(_artifact_from_value(item) for item in _list(document["artifacts"], "artifacts"))
+    items = tuple(_item_from_value(item) for item in _list(document["items"], "items"))
+    relations = tuple(
+        _relation_from_value(item) for item in _list(document["relations"], "relations")
+    )
+    collection = AccessCollection(
+        _string(collection_value["id"], "collection ID"),
+        _string(collection_value["label"], "collection label"),
+        _string(collection_value["status"], "collection status"),
+        _string(collection_value["route"], "collection route"),
+        items,
+        artifacts,
+        relations,
+        _string_tuple_value(collection_value["rights"], "collection rights"),
+    )
+    if access_document(collection) != document:
+        raise ValueError("access document does not match the canonical typed graph")
+    return collection
+
+
 def validate_access_indexes(root: Path) -> None:
     """Validate external segment indexes against their access graph references."""
     document_path = root / "access.json"
@@ -513,3 +590,125 @@ def _register_graph_identifier(value: object, identifiers: set[str]) -> None:
         raise ValueError(f"invalid or duplicate access graph ID: {value!r}")
     assert isinstance(value, str)
     identifiers.add(value)
+
+
+def _artifact_from_value(value: object) -> AccessArtifact:
+    item = _object_with_optional_keys(
+        value,
+        {"id", "label", "role", "capture_path", "media_type"},
+        {"sha256", "container_id", "member_path"},
+        "artifact",
+    )
+    return AccessArtifact(
+        _string(item["id"], "artifact ID"),
+        _string(item["label"], "artifact label"),
+        _string(item["role"], "artifact role"),
+        _string(item["capture_path"], "artifact capture path"),
+        _string(item["media_type"], "artifact media type"),
+        _optional_string(item.get("sha256"), "artifact SHA-256"),
+        _optional_string(item.get("container_id"), "artifact container ID"),
+        _optional_string(item.get("member_path"), "artifact member path"),
+    )
+
+
+def _item_from_value(value: object) -> AccessItem:
+    item = _object_with_keys(
+        value,
+        {"id", "label", "type", "route", "citation", "rights", "representations"},
+        "item",
+    )
+    return AccessItem(
+        _string(item["id"], "item ID"),
+        _string(item["label"], "item label"),
+        _string(item["type"], "item type"),
+        _string(item["route"], "item route"),
+        _string(item["citation"], "item citation"),
+        tuple(
+            _representation_from_value(representation)
+            for representation in _list(item["representations"], "representations")
+        ),
+        _string_tuple_value(item["rights"], "item rights"),
+    )
+
+
+def _representation_from_value(value: object) -> AccessRepresentation:
+    item = _object_with_optional_keys(
+        value,
+        {"id", "label", "kind", "language", "route", "artifact_ids", "segments"},
+        {"segment_index"},
+        "representation",
+    )
+    return AccessRepresentation(
+        _string(item["id"], "representation ID"),
+        _string(item["label"], "representation label"),
+        _string(item["kind"], "representation kind"),
+        _string(item["language"], "representation language"),
+        _string(item["route"], "representation route"),
+        _string_tuple_value(item["artifact_ids"], "representation artifacts"),
+        tuple(
+            _segment_from_value(segment)
+            for segment in _list(item["segments"], "segments")
+        ),
+        _optional_string(item.get("segment_index"), "segment index route"),
+    )
+
+
+def _segment_from_value(value: object) -> AccessSegment:
+    item = _object_with_keys(value, {"id", "label", "route"}, "segment")
+    return AccessSegment(
+        _string(item["id"], "segment ID"),
+        _string(item["label"], "segment label"),
+        _string(item["route"], "segment route"),
+    )
+
+
+def _relation_from_value(value: object) -> AccessRelation:
+    item = _object_with_keys(
+        value,
+        {"source_id", "relation", "target_id"},
+        "relation",
+    )
+    return AccessRelation(
+        _string(item["source_id"], "relation source"),
+        _string(item["relation"], "relation type"),
+        _string(item["target_id"], "relation target"),
+    )
+
+
+def _object_with_keys(value: object, keys: set[str], label: str) -> dict[str, Any]:
+    return _object_with_optional_keys(value, keys, set(), label)
+
+
+def _object_with_optional_keys(
+    value: object,
+    required: set[str],
+    optional: set[str],
+    label: str,
+) -> dict[str, Any]:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise ValueError(f"invalid {label}")
+    if not required.issubset(value) or not set(value).issubset(required | optional):
+        raise ValueError(f"invalid {label} fields")
+    return value
+
+
+def _list(value: object, label: str) -> list[object]:
+    if not isinstance(value, list):
+        raise ValueError(f"invalid {label}")
+    return value
+
+
+def _string(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"invalid {label}")
+    return value
+
+
+def _optional_string(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    return _string(value, label)
+
+
+def _string_tuple_value(value: object, label: str) -> tuple[str, ...]:
+    return tuple(_string(item, label) for item in _list(value, label))

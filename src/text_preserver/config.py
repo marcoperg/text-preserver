@@ -456,6 +456,7 @@ def _load_analysis(value: Any, label: str) -> dict[str, Any]:
         "prefer_preserved_adapter",
         "required_representation_kinds",
         "reader_source",
+        "reader_timeout",
     }
     _only_keys(table, keys, label)
     result: dict[str, Any] = {}
@@ -474,6 +475,15 @@ def _load_analysis(value: Any, label: str) -> dict[str, Any]:
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
             raise ConfigError(f"{label}.expected_work_count: expected a non-negative integer")
         result["expected_work_count"] = count
+    if "reader_timeout" in table:
+        timeout = table["reader_timeout"]
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not 1 <= timeout <= 900
+        ):
+            raise ConfigError(f"{label}.reader_timeout: expected a number from 1 to 900")
+        result["reader_timeout"] = float(timeout)
     if "prefer_preserved_adapter" in table:
         result["prefer_preserved_adapter"] = _boolean(
             table["prefer_preserved_adapter"],

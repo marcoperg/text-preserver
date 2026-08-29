@@ -11,6 +11,11 @@ from typing import Any, Mapping, Sequence, cast
 import webbrowser
 
 from text_preserver import __version__
+from text_preserver.access.catalogue import (
+    build_catalogue,
+    current_catalogue_index,
+    search_catalogue,
+)
 from text_preserver.access.reader import build_static_reader, current_reader_index
 from text_preserver.access.wacz import (
     WaczError,
@@ -146,6 +151,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_config_argument(reader)
     reader.add_argument("--json", action="store_true", help="emit machine-readable result")
+    catalogue = derive_commands.add_parser(
+        "catalogue", help="build a common catalogue and SQLite FTS5 index"
+    )
+    catalogue.add_argument(
+        "collection_ids",
+        nargs="*",
+        help="collections to include; defaults to all enabled collections",
+    )
+    _add_config_argument(catalogue)
+    catalogue.add_argument("--json", action="store_true", help="emit machine-readable result")
 
     open_command = subparsers.add_parser("open", help="open a derived access copy")
     open_commands = open_command.add_subparsers(dest="open_command", required=True)
@@ -158,6 +173,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the index path without launching a browser",
     )
     open_reader.add_argument("--json", action="store_true", help="emit the index path as JSON")
+    open_catalogue = open_commands.add_parser(
+        "catalogue", help="open the current common collection catalogue"
+    )
+    _add_config_argument(open_catalogue)
+    open_catalogue.add_argument(
+        "--print-only",
+        action="store_true",
+        help="print the index path without launching a browser",
+    )
+    open_catalogue.add_argument("--json", action="store_true", help="emit the index path as JSON")
+
+    search = subparsers.add_parser("search", help="query the current SQLite FTS5 access index")
+    search.add_argument("query", help="SQLite FTS5 query")
+    _add_config_argument(search)
+    search.add_argument("--collection", dest="collection_ids", action="append", default=[])
+    search.add_argument("--language", dest="languages", action="append", default=[])
+    search.add_argument("--kind", dest="kinds", action="append", default=[])
+    search.add_argument("--item-type", dest="item_types", action="append", default=[])
+    search.add_argument("--limit", type=int, default=20)
+    search.add_argument("--json", action="store_true", help="emit machine-readable results")
 
     export = subparsers.add_parser("export", help="create or validate interoperable exports")
     export_commands = export.add_subparsers(dest="export_command", required=True)
@@ -326,6 +361,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             for warning in reader_result.metadata.get("warnings", []):
                 print(f"  warning: {warning}")
         return 0 if reader_result.metadata["status"] in {"complete", "complete_with_warnings"} else 1
+    if args.command == "derive" and args.derive_command == "catalogue":
+        try:
+            config = load_config(args.config)
+            catalogue_result = build_catalogue(config, args.collection_ids or None)
+        except (ConfigError, AnalysisError) as exc:
+            print(f"catalogue error: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(catalogue_result.to_dict(), indent=2))
+        else:
+            print(f"Catalogue: {catalogue_result.index_path}")
+            print(f"Search index: {catalogue_result.database_path}")
+            print(f"Status: {catalogue_result.metadata['status']}")
+            summary = catalogue_result.metadata["summary"]
+            print(f"Collections: {summary['available_collection_count']} available, "
+                  f"{summary['unavailable_collection_count']} unavailable")
+            print(f"Documents: {summary['document_count']}")
+            for warning in catalogue_result.metadata.get("warnings", []):
+                print(f"  warning: {warning}")
+        return (
+            0
+            if catalogue_result.metadata["status"] in {"complete", "complete_with_warnings"}
+            else 1
+        )
     if args.command == "open" and args.open_command == "reader":
         try:
             config = load_config(args.config)
@@ -342,6 +401,46 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not webbrowser.open(index_path.resolve().as_uri()):
             print("open error: browser launch was not accepted", file=sys.stderr)
             return 2
+        return 0
+    if args.command == "open" and args.open_command == "catalogue":
+        try:
+            config = load_config(args.config)
+            index_path = current_catalogue_index(config)
+        except (ConfigError, AnalysisError) as exc:
+            print(f"open error: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps({"index_path": str(index_path)}))
+        else:
+            print(index_path)
+        if args.print_only:
+            return 0
+        if not webbrowser.open(index_path.resolve().as_uri()):
+            print("open error: browser launch was not accepted", file=sys.stderr)
+            return 2
+        return 0
+    if args.command == "search":
+        try:
+            config = load_config(args.config)
+            search_result = search_catalogue(
+                config,
+                args.query,
+                collection_ids=args.collection_ids,
+                languages=args.languages,
+                kinds=args.kinds,
+                item_types=args.item_types,
+                limit=args.limit,
+            )
+        except (ConfigError, AnalysisError) as exc:
+            print(f"search error: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(search_result.to_dict(), indent=2))
+        else:
+            for hit in search_result.hits:
+                print(f"{hit.collection_id}\t{hit.title}\t{hit.representation_label}")
+                print(f"  {hit.snippet}")
+                print(f"  {hit.to_dict()['uri']}")
         return 0
     if args.command == "export":
         return _run_export(args)

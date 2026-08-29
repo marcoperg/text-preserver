@@ -21,6 +21,18 @@ text-preserver capture sacred-texts -c collections.toml
 text-preserver analyze preservation sacred-texts -c collections.toml
 ```
 
+The recipe also provides a small inert preservation-status reader. It validates the
+same bounded facts, emits a typed zero-item access graph, and remains `incomplete`; it
+does not extract or replay WARC content, call HTTP records works, or advance
+`LATEST-READER`:
+
+```bash
+text-preserver derive reader sacred-texts /path/to/verified/capture -c collections.toml
+```
+
+Open the capture-scoped `index_path` printed by the command. A full current reader is
+not published until the preservation boundary can honestly be met.
+
 The source uses the Internet Archive item's current direct storage host because repository download aliases redirect and capture intentionally disables redirects. Review the item metadata before changing that explicit host.
 
 ### Downloads-page recovery

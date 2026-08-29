@@ -173,6 +173,23 @@ text-preserver open reader gretil --config collections.toml
 
 The ETCSL reader links all compositions to responsive side-by-side transliteration and translation pages. The GRETIL reader streams all 801 reviewed TEI texts into full local work pages with item-level rights, source metadata, and package provenance. Both work without JavaScript or network access; unresolved or simplified source constructs remain visibly annotated rather than being silently discarded.
 
+Sacred Texts provides a deliberately incomplete preservation-status reader rather than WARC replay or invented work records. Because incomplete readers never replace a current usable reader, build it against an explicit verified capture and open the reported capture-scoped path:
+
+```bash
+text-preserver derive reader sacred-texts /path/to/capture --config collections.toml
+```
+
+After building compatible current readers, derive and use the immutable common catalogue and its representation-level SQLite FTS5 index:
+
+```bash
+text-preserver derive catalogue --config collections.toml
+text-preserver open catalogue --config collections.toml
+text-preserver search '"divine kingship"' --config collections.toml
+text-preserver search 'buddha*' --collection gretil --language sa-Latn --limit 20
+```
+
+The catalogue records unavailable configured collections without treating them as complete. Search indexes only text inside each recipe-declared representation route, excluding shared navigation, provenance sidebars, citations, scripts, and styles. Results link to the exact immutable reader generation used by the catalogue. `catalogue.sqlite`, `catalogue.json`, and the static catalogue are rebuildable derivatives under `derived/catalogue-generations/`; `LATEST-CATALOGUE` advances only for a usable catalogue.
+
 Wget plans ignore ambient proxies and native redirects because Wget's domain filter does not constrain redirect targets. Redirect responses retained in WARC are recorded as proposals without being followed. A follow-up request occurs only when the exact `(from, to)` pair is declared in that source's `reviewed_redirects`; every hop is bounded, checked independently, and executed as another redirect-disabled request. Unreviewed and unsafe targets remain provenance only.
 
 ## Initial Collections
@@ -214,11 +231,11 @@ The project is focused on collections whose primary value is textual, scholarly,
 
 It is not intended to be a whole-web crawler, social-media archiver, general backup system, piracy tool, or replacement for institutional preservation services. It will not bypass authentication, paywalls, access controls, or rate limits.
 
-## Planned Technology
+## Technology
 
 - Python 3.11+ for configuration, capture coordination, manifests, verification, normalization, and local access.
 - GNU Wget with WARC support for the first capture engine.
-- SQLite FTS5 for rebuildable catalogues and full-text search.
+- SQLite FTS5 for rebuildable representation-level catalogues and full-text search.
 - Browsertrix for future browser-based capture.
 - Optional Ciao Prolog for declarative completeness validation and provenance-aware research queries.
 - Optional Org mode integration for linking personal notes to stable preserved passages.

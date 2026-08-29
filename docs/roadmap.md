@@ -168,7 +168,7 @@ file enumeration without invalidating captured version-1 recipes.
 
 ## Phase 4: build the unified access reader
 
-**Status:** In progress; shared shell and initial typed access model implemented for ETCSL/GRETIL
+**Status:** Complete
 
 **Purpose:** Give every collection a consistent local access experience without
 forcing different source formats into one scholarly hierarchy.
@@ -342,7 +342,7 @@ The following do not block version 0.1:
 | Safe redirect handling | Phase 5 | Complete with WARC discovery and exact reviewed per-hop targets. |
 | Cross-platform clean-wheel CI | Baseline | Complete. |
 | BagIt and WACZ interoperability | Phase 6 | Complete with offline creation and independent validation. |
-| Unified reader with collection-specific semantics | Phase 4 | Existing readers provide the migration inputs. |
+| Unified reader with collection-specific semantics | Phase 4 | Complete with composable shell/model contracts, Sacred Texts status access, common catalogue, and SQLite FTS5. |
 | Keep research downstream and optional | Phase 7 | Enforced as a deferral. |
 
 ## Roadmap maintenance

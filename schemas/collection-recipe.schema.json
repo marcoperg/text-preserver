@@ -34,6 +34,7 @@
         "normalizer": { "type": "string", "minLength": 1 },
         "ciao_rules": { "type": "string", "minLength": 1 },
         "reader_source": { "$ref": "config.schema.json#/$defs/safeId" },
+        "reader_timeout": { "type": "number", "minimum": 1, "maximum": 900 },
         "expected_work_count": { "type": "integer", "minimum": 0 },
         "prefer_preserved_adapter": { "type": "boolean" },
         "required_representation_kinds": { "$ref": "config.schema.json#/$defs/stringList" }
