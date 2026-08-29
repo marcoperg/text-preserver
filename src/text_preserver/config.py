@@ -422,6 +422,7 @@ def _load_analysis(value: Any, label: str) -> dict[str, Any]:
         "normalizer",
         "ciao_rules",
         "expected_work_count",
+        "prefer_preserved_adapter",
         "required_representation_kinds",
         "reader_source",
     }
@@ -435,6 +436,11 @@ def _load_analysis(value: Any, label: str) -> dict[str, Any]:
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
             raise ConfigError(f"{label}.expected_work_count: expected a non-negative integer")
         result["expected_work_count"] = count
+    if "prefer_preserved_adapter" in table:
+        result["prefer_preserved_adapter"] = _boolean(
+            table["prefer_preserved_adapter"],
+            f"{label}.prefer_preserved_adapter",
+        )
     if "required_representation_kinds" in table:
         result["required_representation_kinds"] = tuple(
             _string_list(

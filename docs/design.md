@@ -977,6 +977,7 @@ inventory_adapter = "collections/example-corpus/inventory.py"
 normalizer = "collections/example-corpus/normalize.py"
 ciao_rules = "collections/example-corpus/rules/preservation.pl"
 reader_source = "canonical-dataset"
+prefer_preserved_adapter = true
 
 expected_work_count = 100
 required_representation_kinds = ["source", "metadata"]
@@ -993,6 +994,8 @@ source settings
 ```
 
 Collection-specific knowledge should live in recipes, adapters, and rules rather than in hard-coded branches in the generic engine.
+
+Preservation analysis uses the adapter embedded in the immutable capture by default. A recipe may set `prefer_preserved_adapter = false` when collection-level completeness criteria are expected to evolve and old captures must be reassessed by the current adapter; reports record which adapter source and hash were used.
 
 ---
 
@@ -1290,7 +1293,7 @@ GRETIL is no longer an example of a wholly abandoned resource: its migration int
 
 The [Internet Sacred Text Archive](https://www.sacred-texts.com/) is the third collection because of its scale, historical interface, broad collection, and mixture of public-domain source texts with potentially distinct rights in translations, introductions, scans, organization, and site assets.
 
-The first bounded milestone preserves a complete 2021 Internet Archive item containing a 1.33 GB WARC and 154,080 indexed records. Comprehensive live capture remains deferred pending written permission under ISTA's robot terms and Cloudflare allowlisting.
+The first bounded milestone preserves a complete 2021 Internet Archive item containing a 1.33 GB WARC and 154,080 indexed HTTP records, but the ISTA collection remains incomplete. The official 9.0 media inventory describes 2,988,233,761 logical bytes in 173,566 files and includes downloadable representations absent from the WARC. Complete preservation therefore requires legitimate acquisition and fixity capture of that distribution; a comprehensive later-site supplement remains deferred pending written permission under ISTA's robot terms and Cloudflare allowlisting.
 
 Other useful future test collections include:
 

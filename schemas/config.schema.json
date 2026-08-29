@@ -135,6 +135,7 @@
         "ciao_rules": { "type": "string", "minLength": 1 },
         "reader_source": { "$ref": "#/$defs/safeId" },
         "expected_work_count": { "type": "integer", "minimum": 0 },
+        "prefer_preserved_adapter": { "type": "boolean" },
         "required_representation_kinds": { "$ref": "#/$defs/stringList" }
       }
     },

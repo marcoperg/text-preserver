@@ -105,6 +105,7 @@ def analyze_preservation(
         collection,
         capture_directory,
         adapter_value,
+        prefer_preserved=collection.analysis.get("prefer_preserved_adapter", True),
     )
     adapter, adapter_bytes = _load_adapter(adapter_path)
     analyze = getattr(adapter, "analyze_capture", None)
@@ -146,7 +147,9 @@ def analyze_preservation(
         warnings = report.setdefault("warnings", [])
         if not isinstance(warnings, list):
             raise AnalysisError("inventory adapter returned invalid warnings")
-        warnings.append("analysis used the current recipe adapter; capture has no adapter snapshot")
+        warnings.append(
+            "analysis used the current recipe adapter; result may differ from the capture-time assessment"
+        )
         if report["status"] == "complete":
             report["status"] = "complete_with_warnings"
 

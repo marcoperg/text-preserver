@@ -168,6 +168,24 @@ user_agent = "text-preserver-test/1.0"
         self.assertEqual(result.report["capture_id"], self.capture_id)
         self.assertEqual(result.report["analyzer"]["source"], "preserved_capture")
 
+    def test_can_reassess_capture_with_current_adapter(self) -> None:
+        recipe_path = self.root / "recipe/collection.toml"
+        recipe = recipe_path.read_text(encoding="utf-8").replace(
+            'inventory_adapter = "inventory.py"',
+            'inventory_adapter = "inventory.py"\nprefer_preserved_adapter = false',
+        )
+        recipe_path.write_text(recipe, encoding="utf-8")
+        self.create_capture(adapter_source="raise RuntimeError('stale adapter used')")
+
+        result = analyze_preservation(
+            load_config(self.config_path),
+            "etcsl-fixture",
+            self.capture,
+        )
+
+        self.assertEqual(result.status, "complete_with_warnings")
+        self.assertEqual(result.report["analyzer"]["source"], "current_recipe")
+
     def test_rejects_unsafe_capture_id_before_writing_report(self) -> None:
         self.create_capture(metadata_capture_id="../escape")
 

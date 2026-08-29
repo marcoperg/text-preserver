@@ -3,7 +3,7 @@ id = "sacred-texts"
 title = "Internet Sacred Text Archive"
 homepage = "https://sacred-texts.com/"
 description = "A large multilingual archive of texts on religion, mythology, folklore, and esoteric traditions."
-risk_note = "The corpus is large, historically maintained, rights-heterogeneous, and currently protected by terms and Cloudflare controls that prevent an authorized unattended live crawl."
+risk_note = "The corpus is large, historically maintained, rights-heterogeneous, and incomplete here until the official 9.0 media is acquired; terms and Cloudflare controls also prevent an authorized unattended live crawl."
 rights_note = "Rights vary by work, transcription, image, and site-authored context; preserve notices and do not infer a collection-wide public-domain status."
 tags = ["religion", "mythology", "folklore", "digital-library", "warc"]
 enabled = true
@@ -18,14 +18,15 @@ limit_rate = "8M"
 
 [collection.analysis]
 inventory_adapter = "inventory.py"
-expected_work_count = 154080
+expected_work_count = 0
+prefer_preserved_adapter = false
 required_representation_kinds = ["warc-record"]
 
 [[collection.sources]]
 id = "internet-archive-2021"
 kind = "http-file"
 title = "Internet Archive Sacred Texts snapshot from 2021-10-09"
-description = "The complete eight-file Internet Archive item, including its 1.33 GB WARC, two CDX indexes, metadata files, torrent, and the item metadata API response."
+description = "An incomplete historical corpus baseline: the complete eight-file Internet Archive item, including its 1.33 GB WARC, two CDX indexes, metadata files, torrent, and the item metadata API response."
 required = true
 seeds = [
   "https://archive.org/metadata/sacred_texts_com_2021_10_09",
@@ -47,3 +48,24 @@ convert_links = false
 adjust_extension = false
 warc_max_size = "2G"
 quota = "2G"
+
+[[collection.sources]]
+id = "wayback-download-recovery"
+kind = "http-file"
+title = "Wayback recovery of failed downloads-page payloads"
+description = "Three successful historical gzip captures that replace transient 500 responses in the 2021 WARC without requesting the publisher files again."
+required = true
+seeds = [
+  "https://web.archive.org/web/20100407193903id_/http://www.sacred-texts.com/earth/sym/sym.txt.gz",
+  "https://web.archive.org/web/20100407200201id_/http://www.sacred-texts.com/sym/mosy/mosy.txt.gz",
+  "https://web.archive.org/web/20100107003832id_/http://sacred-texts.com/sym/bot/bot.txt.gz",
+]
+allowed_hosts = ["web.archive.org"]
+
+[collection.sources.capture]
+recursive = false
+page_requisites = false
+convert_links = false
+adjust_extension = false
+warc_max_size = "2M"
+quota = "2M"

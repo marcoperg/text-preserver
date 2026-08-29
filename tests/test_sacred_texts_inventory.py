@@ -37,7 +37,7 @@ class SacredTextsInventoryTests(unittest.TestCase):
 
             self.assertEqual(inventory._count_cdx_records(path), 2)
 
-    def test_analyzes_complete_archive_fixture(self) -> None:
+    def test_validates_archive_fixture_but_reports_missing_publisher_media(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             capture = Path(directory) / "20260828T210000Z-a1b2c3"
             mirror = capture / "sources/internet-archive-2021/mirror/example"
@@ -78,27 +78,47 @@ class SacredTextsInventoryTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch.object(inventory, "EXPECTED_IA_ARTIFACTS", artifacts):
+            with (
+                patch.object(inventory, "EXPECTED_IA_ARTIFACTS", artifacts),
+                patch.object(inventory, "EXPECTED_CDX_RECORD_COUNT", 2),
+            ):
                 report = inventory.analyze_capture(
                     capture,
-                    expected_work_count=2,
+                    expected_work_count=0,
                     required_representation_kinds=("warc-record",),
                     required_source_ids=("internet-archive-2021",),
                 )
 
-            self.assertEqual(report["status"], "complete_with_warnings")
-            self.assertEqual(report["errors"], [])
+            self.assertEqual(report["status"], "incomplete")
+            self.assertEqual(
+                report["errors"],
+                [
+                    "official ISTA DVD-ROM/USB 9.0 distribution is not preserved; "
+                    "its published inventory contains 173566 files in 2884 directories"
+                ],
+            )
             self.assertEqual(report["artifact_count"], 8)
             self.assertEqual(report["cdx_record_count"], 2)
+            self.assertEqual(report["expected_cdx_record_count"], 2)
+            self.assertEqual(report["expected_work_count"], 0)
+            self.assertEqual(report["publisher_media"]["preserved"], False)
 
     def test_public_recipe_builds_bounded_archive_plan(self) -> None:
         config = load_config(REPOSITORY_ROOT / "collections.example.toml")
         collection = next(item for item in config.collections if item.id == "sacred-texts")
 
-        plan = plan_capture(config, "sacred-texts")
+        plan = plan_capture(
+            config,
+            "sacred-texts",
+            source_ids=("internet-archive-2021",),
+        )
 
-        self.assertEqual(collection.analysis["expected_work_count"], 154080)
-        self.assertEqual([source.id for source in collection.sources], ["internet-archive-2021"])
+        self.assertEqual(collection.analysis["expected_work_count"], 0)
+        self.assertEqual(collection.analysis["prefer_preserved_adapter"], False)
+        self.assertEqual(
+            [source.id for source in collection.sources],
+            ["internet-archive-2021", "wayback-download-recovery"],
+        )
         self.assertEqual(len(plan.commands), 1)
         command = plan.commands[0]
         self.assertIn("--max-redirect=0", command.argv)
@@ -108,6 +128,39 @@ class SacredTextsInventoryTests(unittest.TestCase):
             encoding="utf-8"
         ).splitlines()
         self.assertEqual(documented, list(collection.sources[0].seeds))
+        recovery_documented = (
+            RECIPE_ROOT / "seeds/wayback-download-recovery.txt"
+        ).read_text(encoding="utf-8").splitlines()
+        self.assertEqual(recovery_documented, list(collection.sources[1].seeds))
+
+    def test_validates_recovered_download_fixity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory)
+            mirror = capture / "sources/wayback-download-recovery/mirror"
+            mirror.mkdir(parents=True)
+            expected = {}
+            for name in inventory.RECOVERED_DOWNLOADS:
+                path = mirror / name
+                with gzip.GzipFile(filename=path, mode="wb", mtime=0) as stream:
+                    stream.write(name.encode("ascii"))
+                compressed = path.read_bytes()
+                text = gzip.decompress(compressed)
+                expected[name] = (
+                    len(compressed),
+                    hashlib.sha256(compressed).hexdigest(),
+                    len(text),
+                    hashlib.sha256(text).hexdigest(),
+                )
+            sources = {"wayback-download-recovery": {"status": "complete"}}
+
+            with patch.object(inventory, "RECOVERED_DOWNLOADS", expected):
+                reports, errors = inventory._validate_download_recovery(
+                    capture,
+                    sources,
+                )
+
+            self.assertEqual(errors, [])
+            self.assertEqual(len(reports), 3)
 
 
 if __name__ == "__main__":

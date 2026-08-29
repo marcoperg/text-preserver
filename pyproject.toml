@@ -70,4 +70,5 @@ where = ["src"]
 ]
 "share/text-preserver/collections/sacred-texts/seeds" = [
   "collections/sacred-texts/seeds/internet-archive-2021.txt",
+  "collections/sacred-texts/seeds/wayback-download-recovery.txt",
 ]

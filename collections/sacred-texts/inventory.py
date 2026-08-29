@@ -44,8 +44,36 @@ EXPECTED_IA_ARTIFACTS = {
         "5db7613c662795e6935ecbc4ce98fd14eb275ac7",
     ),
 }
+EXPECTED_CDX_RECORD_COUNT = 154_080
+PUBLISHER_MEDIA_VERSION = "9.0"
+PUBLISHER_MEDIA_LOGICAL_BYTES = 2_988_233_761
+PUBLISHER_MEDIA_FILE_COUNT = 173_566
+PUBLISHER_MEDIA_DIRECTORY_COUNT = 2_884
+DOWNLOAD_PAGE_PAYLOAD_COUNT = 358
+WARC_DOWNLOAD_PAGE_SUCCESS_COUNT = 348
+RECOVERED_DOWNLOADS = {
+    "bot.txt.gz": (
+        137_917,
+        "b167c92ed350cea6f54d291d2c2970505fe581c0cbf45fa54eabda2fb0b0a22b",
+        386_099,
+        "95b32c3196aefa2e594305b4950baa5b0b223e6fffce7d82024d4af781d62f16",
+    ),
+    "mosy.txt.gz": (
+        182_049,
+        "0dd5d453e17979170078abb50571ec2815874c8ecc570d9af57bc5082301995e",
+        499_890,
+        "aeb2eaa75cacaf46235532233655e8ef85f4072cce5c0425086811c98487014f",
+    ),
+    "sym.txt.gz": (
+        94_788,
+        "f6a3390371a47298f776e587902b92caa60fe2c476c87e452ba8926f53f75a8e",
+        266_751,
+        "64f956da4f7c4c69607c2babf6d05f922fcc07b4a486fb97902417d3448d94a8",
+    ),
+}
 MAX_CDX_RECORDS = 1_000_000
 MAX_CDX_LINE_BYTES = 1024 * 1024
+MAX_RECOVERED_TEXT_BYTES = 10 * 1024 * 1024
 
 
 class InventoryError(ValueError):
@@ -72,9 +100,12 @@ def analyze_capture(
         if source_results.get(source_id, {}).get("status")
         not in {"complete", "complete_with_warnings"}
     ]
-    mirror = capture_directory / "sources/internet-archive-2021/mirror"
-    files, file_errors = _find_capture_files(mirror)
-    errors.extend(file_errors)
+    archive_source_present = "internet-archive-2021" in source_results
+    files: dict[str, Path] = {}
+    if archive_source_present:
+        mirror = capture_directory / "sources/internet-archive-2021/mirror"
+        files, file_errors = _find_capture_files(mirror)
+        errors.extend(file_errors)
 
     metadata: dict[str, object] | None = None
     metadata_path = files.get(METADATA_FILENAME)
@@ -107,9 +138,14 @@ def analyze_capture(
             cdx_record_count = _count_cdx_records(cdx_path)
         except (OSError, UnicodeError, gzip.BadGzipFile, InventoryError) as exc:
             errors.append(f"cannot inspect WARC CDX: {exc}")
-    if "warc-record" in required_representation_kinds and cdx_record_count != expected_work_count:
+    if (
+        archive_source_present
+        and "warc-record" in required_representation_kinds
+        and cdx_record_count != EXPECTED_CDX_RECORD_COUNT
+    ):
         errors.append(
-            f"WARC CDX has {cdx_record_count} records, expected {expected_work_count}"
+            f"WARC CDX has {cdx_record_count} records, "
+            f"expected {EXPECTED_CDX_RECORD_COUNT}"
         )
 
     warc_path = files.get(WARC_FILENAME)
@@ -121,8 +157,18 @@ def analyze_capture(
         except (OSError, gzip.BadGzipFile) as exc:
             errors.append(f"cannot open compressed WARC: {exc}")
 
+    recovered_downloads, recovery_errors = _validate_download_recovery(
+        capture_directory,
+        source_results,
+    )
+    errors.extend(recovery_errors)
+
+    errors.append(
+        "official ISTA DVD-ROM/USB 9.0 distribution is not preserved; its published "
+        "inventory contains 173566 files in 2884 directories"
+    )
     warnings = [
-        "the 2021 third-party WARC is a strong historical baseline, not proof of a complete current site",
+        "the 2021 third-party WARC is an independently useful historical baseline, not a complete ISTA corpus",
         "live comprehensive capture requires ISTA permission and Cloudflare allowlisting",
     ]
     return {
@@ -140,10 +186,78 @@ def analyze_capture(
         "artifact_count": len(artifact_reports),
         "artifacts": artifact_reports,
         "cdx_record_count": cdx_record_count,
+        "expected_cdx_record_count": EXPECTED_CDX_RECORD_COUNT,
+        "expected_work_count": expected_work_count,
+        "publisher_media": {
+            "version": PUBLISHER_MEDIA_VERSION,
+            "preserved": False,
+            "published_logical_bytes": PUBLISHER_MEDIA_LOGICAL_BYTES,
+            "published_file_count": PUBLISHER_MEDIA_FILE_COUNT,
+            "published_directory_count": PUBLISHER_MEDIA_DIRECTORY_COUNT,
+        },
+        "download_page": {
+            "published_payload_count": DOWNLOAD_PAGE_PAYLOAD_COUNT,
+            "warc_successful_payload_count": WARC_DOWNLOAD_PAGE_SUCCESS_COUNT,
+            "recovered_in_capture_count": len(recovered_downloads),
+            "remaining_known_gap_count": (
+                DOWNLOAD_PAGE_PAYLOAD_COUNT
+                - WARC_DOWNLOAD_PAGE_SUCCESS_COUNT
+                - len(recovered_downloads)
+            ),
+            "recovered_payloads": recovered_downloads,
+        },
         "metadata_file_count": (
             len(metadata.get("files", [])) if isinstance(metadata, dict) else 0
         ),
     }
+
+
+def _validate_download_recovery(
+    capture_directory: Path,
+    source_results: dict[str | None, dict[str, object]],
+) -> tuple[list[dict[str, object]], list[str]]:
+    source_id = "wayback-download-recovery"
+    if source_id not in source_results:
+        return [], []
+    root = capture_directory / f"sources/{source_id}/mirror"
+    matches = {
+        name: [path for path in root.rglob(name) if path.is_file() and not path.is_symlink()]
+        if root.is_dir()
+        else []
+        for name in RECOVERED_DOWNLOADS
+    }
+    reports: list[dict[str, object]] = []
+    errors: list[str] = []
+    for name, expected in RECOVERED_DOWNLOADS.items():
+        paths = matches[name]
+        if len(paths) != 1:
+            errors.append(
+                f"recovered download {name} was found {len(paths)} times, expected once"
+            )
+            continue
+        path = paths[0]
+        size, sha256, text_size, text_sha256 = expected
+        if path.stat().st_size != size or _digest(path, "sha256") != sha256:
+            errors.append(f"recovered download fixity mismatch for {name}")
+            continue
+        try:
+            actual_text_size, actual_text_sha256 = _digest_gzip_payload(path)
+        except (OSError, gzip.BadGzipFile, InventoryError) as exc:
+            errors.append(f"cannot inspect recovered download {name}: {exc}")
+            continue
+        if actual_text_size != text_size or actual_text_sha256 != text_sha256:
+            errors.append(f"recovered text payload fixity mismatch for {name}")
+            continue
+        reports.append(
+            {
+                "name": name,
+                "size": size,
+                "sha256": sha256,
+                "text_size": text_size,
+                "text_sha256": text_sha256,
+            }
+        )
+    return reports, errors
 
 
 def _find_capture_files(root: Path) -> tuple[dict[str, Path], list[str]]:
@@ -215,3 +329,15 @@ def _digest(path: Path, algorithm: str) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _digest_gzip_payload(path: Path) -> tuple[int, str]:
+    size = 0
+    digest = hashlib.sha256()
+    with gzip.open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            size += len(chunk)
+            if size > MAX_RECOVERED_TEXT_BYTES:
+                raise InventoryError("recovered text payload exceeds safety limit")
+            digest.update(chunk)
+    return size, digest.hexdigest()
