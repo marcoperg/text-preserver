@@ -88,6 +88,7 @@ class Composition:
     title: str
     transliteration_url: str
     translation_url: str | None
+    catalogue_path: tuple[str, ...] = ()
 
 
 class _CatalogueParser(HTMLParser):
@@ -168,31 +169,53 @@ class _DepositedCatalogueParser(HTMLParser):
         self._in_bold = False
         self._id_parts: list[str] = []
         self._title_parts: list[str] = []
+        self._label_parts: dict[int, list[str]] = {}
+        self._active_labels: dict[int, str] = {}
+        self._record_path: tuple[str, ...] = ()
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         del attrs
         if tag == "li":
+            self._activate_label(self._list_depth)
             self._list_depth += 1
+            self._label_parts[self._list_depth] = []
         elif tag == "b" and self._list_depth and self._record_depth is None:
             self._record_depth = self._list_depth
             self._in_bold = True
             self._id_parts = []
             self._title_parts = []
+            self._record_path = tuple(
+                self._active_labels[depth]
+                for depth in sorted(self._active_labels)
+                if depth < self._record_depth
+            )
 
     def handle_data(self, data: str) -> None:
-        if self._record_depth is None:
-            return
-        (self._id_parts if self._in_bold else self._title_parts).append(data)
+        if self._record_depth is not None:
+            (self._id_parts if self._in_bold else self._title_parts).append(data)
+        elif self._list_depth:
+            self._label_parts.setdefault(self._list_depth, []).append(data)
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "b" and self._in_bold:
             self._in_bold = False
             return
+        if tag == "l":
+            tag = "li"
         if tag != "li" or not self._list_depth:
             return
         if self._record_depth == self._list_depth:
             self._finish_record()
+        self._label_parts.pop(self._list_depth, None)
+        self._active_labels.pop(self._list_depth, None)
         self._list_depth -= 1
+
+    def _activate_label(self, depth: int) -> None:
+        if not depth:
+            return
+        value = " ".join("".join(self._label_parts.get(depth, ())).split())
+        if value and VISIBLE_ID_RE.match(value) is None:
+            self._active_labels[depth] = value
 
     def _finish_record(self) -> None:
         identifier = "".join(self._id_parts).strip()
@@ -203,6 +226,12 @@ class _DepositedCatalogueParser(HTMLParser):
             raise InventoryError(f"invalid deposited catalogue ID: {identifier!r}")
         if not title:
             raise InventoryError(f"composition {identifier!r} has no title")
+        if self._record_path:
+            broad = re.fullmatch(r"([0-9]+)\s*=\s*(.+)", self._record_path[0])
+            if broad is not None and broad.group(1) != identifier.split(".", 1)[0]:
+                raise InventoryError(
+                    f"deposited catalogue category does not match {identifier!r}"
+                )
         self.compositions.append(
             Composition(
                 identifier,
@@ -213,8 +242,10 @@ class _DepositedCatalogueParser(HTMLParser):
                     if identifier in KNOWN_UNTRANSLATED
                     else f"etcsl/translations/t.{identifier}.xml"
                 ),
+                self._record_path,
             )
         )
+        self._record_path = ()
 
 
 def extract_inventory(document: str, *, base_url: str = CATALOGUE_URL) -> tuple[Composition, ...]:

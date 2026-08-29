@@ -9,11 +9,13 @@ import unittest
 from text_preserver.access.reader_model import (
     AccessArtifact,
     AccessCollection,
+    AccessFacet,
     AccessItem,
     AccessRelation,
     AccessRepresentation,
     AccessSegment,
     access_document,
+    access_collection_from_document,
     access_id,
     access_json,
     access_segment_json,
@@ -60,6 +62,13 @@ class ReaderModelTests(unittest.TestCase):
                             ),
                         ),
                     ),
+                    facets=(
+                        AccessFacet(
+                            "catalogue_category",
+                            "Catalogue category",
+                            ("Narrative literature",),
+                        ),
+                    ),
                 ),
             ),
             (
@@ -80,7 +89,11 @@ class ReaderModelTests(unittest.TestCase):
         document = access_document(self.fixture())
         encoded = access_json(self.fixture())
 
-        self.assertEqual(document["schema_version"], 1)
+        self.assertEqual(document["schema_version"], 2)
+        self.assertEqual(
+            document["items"][0]["facets"][0]["values"],
+            ["Narrative literature"],
+        )
         self.assertEqual(
             document["items"][0]["representations"][0]["segments"][0]["label"],
             "Line 1",
@@ -130,7 +143,7 @@ class ReaderModelTests(unittest.TestCase):
         self.assertEqual(route_token("text name"), "text~20name")
         self.assertEqual(route_token("text~name"), "text~7ename")
         identity = reader_model_identity()
-        self.assertEqual(identity["schema_version"], 1)
+        self.assertEqual(identity["schema_version"], 2)
         self.assertRegex(str(identity["sha256"]), r"^[0-9a-f]{64}$")
 
     def test_rejects_remote_routes_and_noncanonical_artifact_paths(self) -> None:
@@ -227,6 +240,77 @@ class ReaderModelTests(unittest.TestCase):
             path.write_text(json.dumps(malformed), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "collection fields"):
                 load_access_collection(root)
+
+    def test_strict_loader_preserves_canonical_schema_one_readers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy = access_document(self.fixture())
+            legacy["schema_version"] = 1
+            for item in legacy["items"]:
+                item.pop("facets")
+            (root / "access.json").write_text(
+                json.dumps(legacy, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            loaded = load_access_collection(root)
+
+            self.assertEqual(loaded.items[0].facets, ())
+
+    def test_rejects_duplicate_and_inconsistent_facets(self) -> None:
+        collection = self.fixture()
+        item = collection.items[0]
+        duplicate = replace(item, facets=item.facets + item.facets)
+        with self.assertRaisesRegex(ValueError, "invalid item facet"):
+            access_document(replace(collection, items=(duplicate,)))
+
+        second = replace(
+            item,
+            id=access_id("example", "item", "work-2"),
+            route="works/work-2.html",
+            facets=(
+                AccessFacet(
+                    "catalogue_category",
+                    "Different label",
+                    ("Poetry",),
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "inconsistent item facet label"):
+            access_document(replace(collection, items=(item, second)))
+
+        inconsistent_note = replace(
+            second,
+            facets=(
+                AccessFacet(
+                    "catalogue_category",
+                    "Catalogue category",
+                    ("Poetry",),
+                    note="Different source qualification.",
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "inconsistent item facet note"):
+            access_document(replace(collection, items=(item, inconsistent_note)))
+
+        unknown_artifact = replace(
+            item,
+            facets=(
+                AccessFacet(
+                    "category",
+                    "Category",
+                    ("Poetry",),
+                    ("tp:example/artifact/missing",),
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "invalid item facet"):
+            access_document(replace(collection, items=(unknown_artifact,)))
+
+        malformed = access_document(collection)
+        malformed["schema_version"] = True
+        with self.assertRaisesRegex(ValueError, "unsupported access model schema"):
+            access_collection_from_document(malformed)
 
     def test_strict_loader_rejects_hardlinked_access_document(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

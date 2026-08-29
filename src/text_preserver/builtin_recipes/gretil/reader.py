@@ -13,6 +13,7 @@ from text_preserver.adapters import ReaderContext, ReaderReport
 from text_preserver.access.reader_model import (
     AccessArtifact,
     AccessCollection,
+    AccessFacet,
     AccessItem,
     AccessRelation,
     AccessRepresentation,
@@ -24,12 +25,14 @@ from text_preserver.access.reader_model import (
 )
 from text_preserver.access.reader_shell import (
     ReaderFact,
+    ReaderFacet,
     ReaderLink,
     reader_stylesheet,
     render_artifact_reference,
     render_citation,
     render_document,
     render_facts,
+    render_facets,
     render_navigation,
     render_notice,
     render_status,
@@ -265,6 +268,7 @@ def write_static_reader(
                         ),
                     ),
                     item_rights,
+                    _record_access_facets(record, (member_artifact_id,)),
                 )
             )
             relations.append(AccessRelation(item_id, "part_of", collection_access_id))
@@ -463,6 +467,27 @@ def _reader_record(
     }
 
 
+def _record_access_facets(
+    record: Mapping[str, object],
+    artifact_ids: tuple[str, ...] = (),
+) -> tuple[AccessFacet, ...]:
+    facets: list[AccessFacet] = []
+    authors = tuple(dict.fromkeys(_record_values(record, "authors")))
+    terms = tuple(dict.fromkeys(_record_values(record, "terms")))
+    if authors:
+        facets.append(AccessFacet("author", "Author", authors, artifact_ids))
+    if terms:
+        facets.append(AccessFacet("tei_keyword", "TEI keyword", terms, artifact_ids))
+    return tuple(facets)
+
+
+def _record_values(record: Mapping[str, object], key: str) -> tuple[str, ...]:
+    values = record.get(key)
+    if not isinstance(values, list):
+        return ()
+    return tuple(str(value) for value in values if value)
+
+
 def _access_segments(
     text: ElementTree.Element | None,
     identifier: str,
@@ -599,12 +624,16 @@ def _render_reader_work(
             else None
         ),
     )
-    authors = "; ".join(str(value) for value in record["authors"])
     language_values = [
         f"{code} ({label})" if code and label and code != label else code or label
         for code, label in record["languages"]
     ]
-    terms = " / ".join(str(value) for value in record["terms"])
+    facets = render_facets(
+        tuple(
+            ReaderFacet(facet.label, facet.values)
+            for facet in _record_access_facets(record)
+        )
+    )
     availability = root.find("./tei:teiHeader/tei:fileDesc/tei:publicationStmt/tei:availability", TEI)
     source_description = root.find("./tei:teiHeader/tei:fileDesc/tei:sourceDesc", TEI)
     notes = root.find("./tei:teiHeader/tei:fileDesc/tei:notesStmt", TEI)
@@ -647,9 +676,8 @@ def _render_reader_work(
 <header class="reader-header">
   <p class="reader-eyebrow">{escape_html(str(record["identifier"]))}</p>
   <h1>{escape_html(str(record["title"]))}</h1>
-  {f'<p class="byline">{escape_html(authors)}</p>' if authors else ''}
   <p class="record-meta">{escape_html(' / '.join(language_values))}</p>
-  {f'<p class="terms">{escape_html(terms)}</p>' if terms else ''}
+  {facets}
 </header>
 <main class="reader-main work-layout">
   <aside class="record-sidebar">

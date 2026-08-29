@@ -607,7 +607,7 @@ The reader should not pretend that all collections share the same textual struct
 The implementation begins with a versioned Python shell library under
 `text_preserver.access`. It supplies the inert HTML envelope, external base stylesheet,
 responsive and print behavior, local navigation, status/warning panels, and plain-text
-provenance facts. Recipe adapters compose those primitives and provide their own body
+provenance facts and accessible source-authored facets. Recipe adapters compose those primitives and provide their own body
 renderers and optional collection stylesheet. ETCSL therefore retains its parallel
 transliteration/translation view, while GRETIL retains streamed TEI mixed content,
 apparatus, rights, and its metadata sidebar. This shared source is an explicit reader
@@ -616,7 +616,10 @@ build input rather than an untracked dependency outside the captured recipe bund
 Each migrated reader emits a validated `access.json` document using the common model
 schema. The document records stable `tp:` identifiers, local routes, rights and
 citations, typed items and representations, source-supported segments, preserved
-package/member artifacts, and explicit graph relations. It does not contain rendered
+package/member artifacts, optional item facets, and explicit graph relations. Facets
+are flat, collection-local labeled values with source-artifact references and optional
+source caveats rather than a universal genre hierarchy;
+recipes may expose categories, catalogue paths, authors, or no facets. It does not contain rendered
 text and does not require every collection to invent work or segment concepts that its
 source does not support. ETCSL exposes composition, transliteration, translation, and
 numbered line/paragraph records inline. GRETIL exposes reviewed texts, TEI
@@ -657,13 +660,14 @@ and item-type filters and resolves results back to immutable local reader files.
 
 ```text
 Collection
+├── Item ──has──> optional source-authored Facet values
 ├── Item ──typed relation──> Item
 ├── Item ──represented by──> Representation
 ├── Representation ──contains──> Segment
 └── Representation <──realized by──> Artifact
 ```
 
-These are graph relations, not a mandatory ownership tree. Recipes may expose work, edition, translation, or text-version views where those concepts fit, while bibliographies, dictionaries, inscriptions, catalogues, and database records retain their own item types. Stable identifiers and provenance-bearing relations provide the common contract.
+These are graph relations, not a mandatory ownership tree. Facets likewise do not impose a shared taxonomy: ETCSL preserves the complete deposited catalogue path beginning with its broad category, while GRETIL preserves TEI authors and keyword terms without treating the terms or their delimiters as a universal hierarchy. Recipes may expose work, edition, translation, or text-version views where those concepts fit, while bibliographies, dictionaries, inscriptions, catalogues, and database records retain their own item types. Stable identifiers and provenance-bearing relations provide the common contract. Schema-2 readers emit facets; canonical schema-1 immutable readers remain loadable with an empty facet set.
 
 ### Initial reader features
 

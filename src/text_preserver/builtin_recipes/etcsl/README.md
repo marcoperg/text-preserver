@@ -28,7 +28,7 @@ python src/text_preserver/builtin_recipes/etcsl/validator.py \
   --known-untranslated 0.1.1
 ```
 
-`validator.py` supports both the historical link-based catalogue and the deposited nested catalogue, where bold identifiers distinguish included compositions from unedited entries. Identifiers remain strings so leading zeros and alphabetic suffixes are preserved.
+`validator.py` supports both the historical link-based catalogue and the deposited nested catalogue, where bold identifiers distinguish included compositions from unedited entries. The nested parser preserves each exact source classification path; identifiers remain strings so leading zeros and alphabetic suffixes are preserved. ETCSL itself cautions that this thematic arrangement reflects modern perceptions and may suggest misleading genre relationships, so the reader calls it a catalogue path rather than an objective genre hierarchy.
 
 `rules/preservation.pl` provides the first optional Ciao completeness rules. It requires a transliteration for every composition and a translation for every composition not listed as intentionally untranslated.
 
@@ -49,7 +49,7 @@ text-preserver derive reader etcsl -c collections.toml
 text-preserver open reader etcsl -c collections.toml
 ```
 
-The recipe's `reader.py` adapter imports ETCSL package checks from sibling `validator.py`. Its `reader_source = "ota-dataset"` setting resolves the capture through `LATEST-ota-dataset`; an explicit capture path remains supported. The command writes `reader/index.html`, 394 composition pages, and `metadata.json` under the capture's directory in `derived/`, then atomically updates the collection-level `reader` symlink after a usable build. Pages contain responsive transliteration and translation columns, manuscript sections, line or paragraph labels, notes, gaps, and editorial milestones. They contain no JavaScript or external assets and can be opened in EWW or a normal browser. Use `open reader --print-only` to print the stable path without launching a browser.
+The recipe's `reader.py` adapter imports ETCSL package checks from sibling `validator.py`. Its `reader_source = "ota-dataset"` setting resolves the capture through `LATEST-ota-dataset`; an explicit capture path remains supported. The command writes `reader/index.html`, 394 composition pages, and `metadata.json` under the capture's directory in `derived/`, then atomically updates the collection-level `reader` symlink after a usable build. The index follows deposited catalogue order and replaces inferred numeric group headings with exact human labels; entries and work pages show deeper source paths while retaining corpus numbers. Pages also contain responsive transliteration and translation columns, manuscript sections, line or paragraph labels, notes, gaps, and editorial milestones. They contain no JavaScript or external assets and can be opened in EWW or a normal browser. Use `open reader --print-only` to print the stable path without launching a browser.
 
 This first reader is not a replica of the historical ETCSL website. It omits bibliography linking and advanced stand-off annotations. ETCSL-specific letters, subscripts, editorial signs, determinatives, and horizontal rulings are decoded before standard HTML entities. This precedence matters because ETCSL's `&aleph;` and `&mu;` names otherwise collide with unrelated HTML entities. Determinatives are shown as semantic superscripts, while any genuinely unknown name remains visible as its source token.
 

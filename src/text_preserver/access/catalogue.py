@@ -57,7 +57,8 @@ from text_preserver.derived import (
 )
 
 
-CATALOGUE_SCHEMA_VERSION = 1
+CATALOGUE_SCHEMA_VERSION = 2
+SUPPORTED_CATALOGUE_SCHEMA_VERSIONS = frozenset({1, 2})
 CATALOGUE_APPLICATION_ID = 0x54504654
 MAX_CATALOGUE_FILES = 16
 MAX_CATALOGUE_BYTES = 512 * 1024 * 1024
@@ -238,7 +239,11 @@ def build_catalogue(
             reader_inputs,
             build_key,
         )
-        _validate_database(database_path, verify_external_content=True)
+        _validate_database(
+            database_path,
+            verify_external_content=True,
+            expected_schema_version=CATALOGUE_SCHEMA_VERSION,
+        )
         database_sha256 = _sha256(database_path)
         output_tree = _validate_catalogue_tree(staging)
         summary = {
@@ -493,6 +498,16 @@ def _catalogue_projection(
                         "route": f"{reader_prefix}/{item.route}",
                         "citation": item.citation,
                         "rights": list(item.rights),
+                        "facets": [
+                            {
+                                "key": facet.key,
+                                "label": facet.label,
+                                "values": list(facet.values),
+                                "artifact_ids": list(facet.artifact_ids),
+                                "note": facet.note,
+                            }
+                            for facet in item.facets
+                        ],
                         "representations": [
                             {
                                 "id": representation.id,
@@ -507,7 +522,7 @@ def _catalogue_projection(
                             )
                         ],
                     }
-                    for item in sorted(value.access.items, key=lambda item: item.id)
+                    for item in value.access.items
                 ],
             }
         )
@@ -756,7 +771,14 @@ CREATE VIRTUAL TABLE document_fts USING fts5(title,representation_label,body,con
     return logical.hexdigest(), document_count
 
 
-def _validate_database(path: Path, *, verify_external_content: bool = False) -> None:
+def _validate_database(
+    path: Path,
+    *,
+    verify_external_content: bool = False,
+    expected_schema_version: int | None = None,
+) -> None:
+    if expected_schema_version is not None and type(expected_schema_version) is not int:
+        raise ValueError("catalogue database schema version is invalid")
     connection = (
         sqlite3.connect(path)
         if verify_external_content
@@ -768,7 +790,12 @@ def _validate_database(path: Path, *, verify_external_content: bool = False) -> 
             disable_extensions(False)
         if connection.execute("PRAGMA application_id").fetchone()[0] != CATALOGUE_APPLICATION_ID:
             raise ValueError("catalogue database application ID is invalid")
-        if connection.execute("PRAGMA user_version").fetchone()[0] != CATALOGUE_SCHEMA_VERSION:
+        schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if (
+            schema_version not in SUPPORTED_CATALOGUE_SCHEMA_VERSIONS
+            or expected_schema_version is not None
+            and schema_version != expected_schema_version
+        ):
             raise ValueError("catalogue database schema version is invalid")
         if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
             raise ValueError("catalogue database quick check failed")
@@ -824,6 +851,7 @@ def _render_catalogue(
             )
             continue
         items = value.get("items", [])
+        facet_notes = _render_facet_notes(items)
         entries: list[str] = []
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, dict):
@@ -834,17 +862,18 @@ def _render_catalogue(
                 for rep in representations
                 if isinstance(rep, dict)
             ) if isinstance(representations, list) else ""
+            facet_html = _render_item_facets(item.get("facets", []))
             entries.append(
                 f'<li><a href="{escape_html(str(item.get("route", "")), quote=True)}">'
-                f'{escape_html(str(item.get("label", "")))}</a><span class="representation-badges">'
-                f"{badges}</span></li>"
+                f'{escape_html(str(item.get("label", "")))}</a>{facet_html}'
+                f'<span class="representation-badges">{badges}</span></li>'
             )
         reader = value["reader"]
         assert isinstance(reader, dict)
         sections.append(
             f'<section class="catalogue-card"><p class="reader-eyebrow">{state}</p><h2>{label}</h2>'
             f'<p><a href="{escape_html(str(reader["route"]), quote=True)}">Open collection reader</a></p>'
-            f'<ol class="catalogue-items">{"".join(entries)}</ol></section>'
+            f'{facet_notes}<ol class="catalogue-items">{"".join(entries)}</ol></section>'
         )
     return render_document(
         "Text Preserver collection catalogue",
@@ -862,13 +891,67 @@ def _render_catalogue(
     )
 
 
+def _render_item_facets(value: object) -> str:
+    if not isinstance(value, list):
+        return ""
+    facets = [facet for facet in value if isinstance(facet, dict)]
+    selected = facets[:2]
+    entries: list[str] = []
+    for facet in selected:
+        if not isinstance(facet, dict) or not isinstance(facet.get("values"), list):
+            continue
+        values = facet["values"]
+        displayed = "; ".join(str(entry) for entry in values[:3])
+        if len(values) > 3:
+            displayed += f"; and {len(values) - 3} more"
+        entries.append(
+            f'<div><dt>{escape_html(str(facet.get("label", "")))}</dt>'
+            f"<dd>{escape_html(displayed)}</dd></div>"
+        )
+    return f'<dl class="item-facets">{"".join(entries)}</dl>' if entries else ""
+
+
+def _render_facet_notes(value: object) -> str:
+    if not isinstance(value, list):
+        return ""
+    notes: dict[str, tuple[str, str]] = {}
+    for item in value:
+        if not isinstance(item, dict) or not isinstance(item.get("facets"), list):
+            continue
+        for facet in item["facets"]:
+            if not isinstance(facet, dict):
+                continue
+            note = facet.get("note")
+            key = facet.get("key")
+            label = facet.get("label")
+            if isinstance(key, str) and isinstance(label, str) and isinstance(note, str):
+                notes.setdefault(key, (label, note))
+    if not notes:
+        return ""
+    entries = list(notes.values())
+    rendered = "".join(
+        f"<div><dt>{escape_html(label)}</dt><dd>{escape_html(note)}</dd></div>"
+        for label, note in entries[:8]
+    )
+    if len(entries) > 8:
+        rendered += (
+            f"<div><dt>Additional facet notes</dt><dd>{len(entries) - 8} omitted</dd></div>"
+        )
+    return f'<aside class="facet-notes"><dl>{rendered}</dl></aside>'
+
+
 def _catalogue_stylesheet() -> str:
     return """.catalogue-grid{display:grid;gap:1.5rem}.catalogue-card{padding:1.25rem;border:1px solid
 var(--reader-rule);background:var(--reader-sheet)}.catalogue-card.unavailable{border-style:dashed}
-.catalogue-items{list-style:none;padding:0}.catalogue-items li{display:grid;grid-template-columns:1fr auto;
+.catalogue-items{list-style:none;padding:0}.catalogue-items li{display:grid;grid-template-columns:minmax(12rem,1fr) minmax(10rem,1fr) auto;
 gap:1rem;padding:.55rem 0;border-top:1px solid var(--reader-rule)}.representation-badges{display:flex;
 gap:.35rem;flex-wrap:wrap;color:var(--reader-muted);font-size:.75rem}.representation-badges span{
-border:1px solid var(--reader-rule);padding:.1rem .35rem}@media(max-width:700px){.catalogue-items li{
+border:1px solid var(--reader-rule);padding:.1rem .35rem}.item-facets{display:grid;min-width:0;margin:0;
+color:var(--reader-muted);font-size:.8rem}.item-facets div{min-width:0}.item-facets dt{font-weight:700;
+color:var(--reader-ink);overflow-wrap:anywhere}.item-facets dd{margin:0;overflow-wrap:anywhere}.facet-notes{
+padding:.5rem .8rem;border-left:3px solid var(--reader-accent);background:var(--reader-paper)}.facet-notes dl{
+margin:0}.facet-notes div{margin:.35rem 0}.facet-notes dt{font-weight:700;overflow-wrap:anywhere}.facet-notes dd{margin:0;
+overflow-wrap:anywhere}@media(max-width:700px){.catalogue-items li{
 grid-template-columns:1fr}}"""
 
 
@@ -1033,8 +1116,10 @@ def _existing_catalogue_index(derived_root: Path) -> Path | None:
     ):
         raise AnalysisError(f"catalogue pointer target is unavailable: {pointer}")
     metadata = _read_json(generation / "metadata.json", "catalogue metadata")
+    metadata_schema = metadata.get("schema_version")
     if (
-        metadata.get("schema_version") != CATALOGUE_SCHEMA_VERSION
+        type(metadata_schema) is not int
+        or metadata_schema not in SUPPORTED_CATALOGUE_SCHEMA_VERSIONS
         or metadata.get("build_key") != relative.parts[1]
         or metadata.get("status") not in SUCCESS_STATUSES
         or not isinstance(metadata.get("build_inputs"), dict)
@@ -1044,7 +1129,10 @@ def _existing_catalogue_index(derived_root: Path) -> Path | None:
         != _validate_catalogue_tree(generation, allow_metadata=True)
     ):
         raise AnalysisError(f"catalogue metadata does not match pointer: {pointer}")
-    _validate_database(generation / "catalogue.sqlite")
+    _validate_database(
+        generation / "catalogue.sqlite",
+        expected_schema_version=metadata_schema,
+    )
     return generation / "index.html"
 
 

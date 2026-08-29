@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from text_preserver.adapters import _load_adapter
+from text_preserver.adapters import ReaderContext, _load_adapter
 from text_preserver.recipes import public_recipe_path
 
 
@@ -55,7 +55,7 @@ class EtcslInventoryTests(unittest.TestCase):
     def test_extracts_nested_deposited_catalogue_records(self) -> None:
         document = """
 <ul><li>Category<ul>
-<li><b>0.1.1</b> Untranslated record</li>
+<li><b>0.1.1</b> Untranslated record</l>
 <li><b>1.8.1.1</b> Gilgame&#x0161; and <i>Aga</i></li>
 <li>1.8.1.9 Unedited record</li>
 </ul></li></ul>
@@ -65,6 +65,7 @@ class EtcslInventoryTests(unittest.TestCase):
 
         self.assertEqual([item.id for item in compositions], ["0.1.1", "1.8.1.1"])
         self.assertEqual(compositions[1].title, "Gilgameš and Aga")
+        self.assertEqual(compositions[0].catalogue_path, ("Category",))
         self.assertIsNone(compositions[0].translation_url)
         self.assertEqual(
             compositions[1].transliteration_url,
@@ -309,7 +310,7 @@ class EtcslInventoryTests(unittest.TestCase):
             self.assertIn(".reader-nav", payload["files"]["assets/reader.css"])
             self.assertIn(".parallel-text", payload["files"]["assets/etcsl.css"])
             access = json.loads(payload["files"]["access.json"])
-            self.assertEqual(access["schema_version"], 1)
+            self.assertEqual(access["schema_version"], 2)
             self.assertEqual(access["collection"]["id"], "tp:etcsl/collection")
             self.assertIn("permission to redistribute", access["collection"]["rights"][0])
             self.assertEqual(access["items"][0]["route"], "works/1.1.1.html")
@@ -332,6 +333,74 @@ class EtcslInventoryTests(unittest.TestCase):
                     for segment in representation["segments"]:
                         _path, fragment = segment["route"].split("#", 1)
                         self.assertIn(f'id="{fragment}"', item_page)
+
+    def test_reader_uses_deposited_human_catalogue_classifications(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory) / "20260827T120000Z-a1b2c3"
+            mirror = capture / "sources/ota-dataset/mirror"
+            mirror.mkdir(parents=True)
+            (mirror / "etcslfullcat.html").write_text(
+                """
+<ul><li>1 = Narrative and mythological compositions<ul>
+<li>Narratives featuring deities<ul><li>Enki<ul>
+<li><b>1.1.1</b> Enki and Ninḫursaĝa</li>
+</ul></li></ul></li></ul></li></ul>
+""".strip(),
+                encoding="utf-8",
+            )
+            with zipfile.ZipFile(mirror / "etcsl.zip", "w") as archive:
+                archive.writestr("etcsl/tei/tei2.dtd", "")
+                for kind, directory_name, suffix, body in (
+                    ("c", "transliterations", "a composite transliteration", "<l n='1'>Text.</l>"),
+                    ("t", "translations", "an English prose translation", "<p n='1'>Text.</p>"),
+                ):
+                    archive.writestr(
+                        f"etcsl/{directory_name}/{kind}.1.1.1.xml",
+                        (
+                            f'<TEI.2 id="{kind}.1.1.1"><teiHeader><fileDesc><titleStmt>'
+                            f"<title>Enki and Ninḫursaĝa -- {suffix}</title>"
+                            f"</titleStmt></fileDesc></teiHeader><text><body>{body}</body></text></TEI.2>"
+                        ),
+                    )
+
+            payload = reader.render_static_reader(capture, expected_work_count=1)
+            index = payload["files"]["index.html"]
+            work = payload["files"]["works/1.1.1.html"]
+            access = json.loads(payload["files"]["access.json"])
+
+            self.assertIn("1 = Narrative and mythological compositions", index)
+            self.assertIn("Narratives featuring deities › Enki", index)
+            self.assertNotIn("<h2>Group 1</h2>", index)
+            self.assertIn("ETCSL catalogue path", work)
+            self.assertIn("reflects modern perceptions", work)
+            self.assertIn(
+                "Narrative and mythological compositions › Narratives featuring deities › Enki",
+                work,
+            )
+            facets = {facet["key"]: facet for facet in access["items"][0]["facets"]}
+            self.assertIn("› Enki", facets["catalogue_path"]["values"][0])
+            self.assertTrue(
+                facets["catalogue_path"]["values"][0].startswith(
+                    "1 = Narrative and mythological compositions"
+                )
+            )
+            self.assertEqual(
+                facets["catalogue_path"]["artifact_ids"],
+                ["tp:etcsl/artifact/ota-catalogue"],
+            )
+            self.assertIn("reflects modern perceptions", facets["catalogue_path"]["note"])
+            self.assertIn(
+                "Deposited ETCSL catalogue",
+                [artifact["label"] for artifact in access["artifacts"]],
+            )
+            self.assertEqual(payload["summary"]["classified_work_count"], 1)
+
+            output = Path(directory) / "reader"
+            report = reader.build_reader(ReaderContext(capture, output, 1))
+            self.assertIsNone(report.files)
+            self.assertTrue((output / "index.html").is_file())
+            self.assertTrue((output / "works/1.1.1.html").is_file())
+            self.assertTrue((output / "access.json").is_file())
 
     def test_reader_is_incomplete_for_mismatched_root_id(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

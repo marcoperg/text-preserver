@@ -4,6 +4,7 @@ import unittest
 
 from text_preserver.access.reader_shell import (
     ReaderFact,
+    ReaderFacet,
     ReaderLink,
     reader_shell_identity,
     reader_stylesheet,
@@ -11,6 +12,7 @@ from text_preserver.access.reader_shell import (
     render_citation,
     render_document,
     render_facts,
+    render_facets,
     render_navigation,
     render_notice,
     render_status,
@@ -46,6 +48,15 @@ class ReaderShellTests(unittest.TestCase):
             "../access.json",
         )
         citation = render_citation("Work <one>", "tp:example/item/one&two")
+        facets = render_facets(
+            (
+                ReaderFacet(
+                    "Category <source>",
+                    ("Myth & narrative",),
+                    "Source warns <against> literal interpretation.",
+                ),
+            )
+        )
 
         self.assertIn("Catalogue &lt;root&gt;", navigation)
         self.assertIn("Next: Next &amp; item", navigation)
@@ -55,6 +66,12 @@ class ReaderShellTests(unittest.TestCase):
         self.assertIn("Source &lt;artifact&gt;", artifact)
         self.assertIn("tp:example/artifact/source&amp;one", artifact)
         self.assertIn("Work &lt;one&gt;", citation)
+        self.assertIn("Category &lt;source&gt;", facets)
+        self.assertIn("Myth &amp; narrative", facets)
+        self.assertIn("<ul", facets)
+        self.assertIn("<li>Myth &amp; narrative</li>", facets)
+        self.assertIn("Source warns &lt;against&gt; literal interpretation.", facets)
+        self.assertEqual(render_facets(()), "")
         self.assertIn("tp:example/item/one&amp;two", citation)
         self.assertEqual(render_notice("Source <notice>"), '<aside class="reader-notice">Source &lt;notice&gt;</aside>')
         with self.assertRaisesRegex(ValueError, "not local"):
@@ -63,10 +80,11 @@ class ReaderShellTests(unittest.TestCase):
     def test_identity_and_stylesheet_are_stable_inputs(self) -> None:
         identity = reader_shell_identity()
 
-        self.assertEqual(identity["schema_version"], 1)
+        self.assertEqual(identity["schema_version"], 2)
         self.assertRegex(str(identity["sha256"]), r"^[0-9a-f]{64}$")
         self.assertIn(".reader-nav", reader_stylesheet())
         self.assertIn(".reader-status", reader_stylesheet())
+        self.assertIn(".reader-facets", reader_stylesheet())
 
 
 if __name__ == "__main__":

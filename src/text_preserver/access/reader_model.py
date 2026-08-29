@@ -10,10 +10,12 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 from typing import Any, Mapping
+import unicodedata
 from urllib.parse import quote, urlsplit
 
 
-ACCESS_MODEL_SCHEMA_VERSION = 1
+ACCESS_MODEL_SCHEMA_VERSION = 2
+SUPPORTED_ACCESS_MODEL_SCHEMA_VERSIONS = frozenset({1, 2})
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 _TYPE_RE = re.compile(r"[a-z][a-z0-9_-]*")
 _ACCESS_ID_RE = re.compile(
@@ -27,6 +29,8 @@ MAX_ACCESS_JSON_BYTES = 64 * 1024 * 1024
 MAX_ACCESS_ID_LENGTH = 2_048
 MAX_ACCESS_TEXT_LENGTH = 16_384
 MAX_EXTERNAL_ACCESS_SEGMENTS = 500_000
+MAX_ITEM_FACETS = 32
+MAX_FACET_VALUES = 128
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,15 @@ class AccessRepresentation:
 
 
 @dataclass(frozen=True)
+class AccessFacet:
+    key: str
+    label: str
+    values: tuple[str, ...]
+    artifact_ids: tuple[str, ...] = ()
+    note: str | None = None
+
+
+@dataclass(frozen=True)
 class AccessItem:
     id: str
     label: str
@@ -69,6 +82,7 @@ class AccessItem:
     citation: str
     representations: tuple[AccessRepresentation, ...]
     rights: tuple[str, ...] = ()
+    facets: tuple[AccessFacet, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -114,6 +128,13 @@ def route_token(value: str) -> str:
 
 def access_document(collection: AccessCollection) -> dict[str, Any]:
     """Validate and serialize one collection's common access graph."""
+    return _access_document(collection, ACCESS_MODEL_SCHEMA_VERSION)
+
+
+def _access_document(
+    collection: AccessCollection,
+    schema_version: int,
+) -> dict[str, Any]:
     if (
         not _valid_text(collection.label)
         or not isinstance(collection.status, str)
@@ -194,6 +215,8 @@ def access_document(collection: AccessCollection) -> dict[str, Any]:
     representation_routes: set[str] = set()
     segment_routes: set[str] = set()
     segment_count = 0
+    facet_labels: dict[str, str] = {}
+    facet_notes: dict[str, str | None] = {}
     for item in collection.items:
         register(item.id, "item")
         endpoint_ids.add(item.id)
@@ -209,6 +232,41 @@ def access_document(collection: AccessCollection) -> dict[str, Any]:
             or _TYPE_RE.fullmatch(item.item_type) is None
         ):
             raise ValueError(f"invalid item type: {item.item_type!r}")
+        if len(item.facets) > MAX_ITEM_FACETS:
+            raise ValueError(f"access item exceeds {MAX_ITEM_FACETS} facets: {item.id}")
+        facet_values: list[dict[str, Any]] = []
+        facet_keys: set[str] = set()
+        for facet in item.facets:
+            if (
+                not isinstance(facet.key, str)
+                or _TYPE_RE.fullmatch(facet.key) is None
+                or facet.key in facet_keys
+                or not _valid_facet_text(facet.label)
+                or not 1 <= len(facet.values) <= MAX_FACET_VALUES
+                or any(not _valid_facet_text(value) for value in facet.values)
+                or len(set(facet.values)) != len(facet.values)
+                or not _string_tuple(facet.artifact_ids)
+                or any(value not in artifact_ids for value in facet.artifact_ids)
+                or facet.note is not None
+                and not _valid_facet_text(facet.note)
+            ):
+                raise ValueError(f"invalid item facet: {item.id}")
+            previous_label = facet_labels.setdefault(facet.key, facet.label)
+            if previous_label != facet.label:
+                raise ValueError(f"inconsistent item facet label: {facet.key}")
+            if facet.key in facet_notes and facet_notes[facet.key] != facet.note:
+                raise ValueError(f"inconsistent item facet note: {facet.key}")
+            facet_notes[facet.key] = facet.note
+            facet_keys.add(facet.key)
+            facet_values.append(
+                {
+                    "key": facet.key,
+                    "label": facet.label,
+                    "values": list(facet.values),
+                    "artifact_ids": list(facet.artifact_ids),
+                    "note": facet.note,
+                }
+            )
         representation_values: list[dict[str, Any]] = []
         for representation in item.representations:
             register(representation.id, "representation")
@@ -261,8 +319,7 @@ def access_document(collection: AccessCollection) -> dict[str, Any]:
             if representation.segment_index is not None:
                 representation_value["segment_index"] = representation.segment_index
             representation_values.append(representation_value)
-        item_values.append(
-            {
+        item_value: dict[str, Any] = {
                 "id": item.id,
                 "label": item.label,
                 "type": item.item_type,
@@ -271,7 +328,9 @@ def access_document(collection: AccessCollection) -> dict[str, Any]:
                 "rights": list(item.rights),
                 "representations": representation_values,
             }
-        )
+        if schema_version >= 2:
+            item_value["facets"] = facet_values
+        item_values.append(item_value)
 
     relation_values: list[dict[str, str]] = []
     for relation in collection.relations:
@@ -292,7 +351,7 @@ def access_document(collection: AccessCollection) -> dict[str, Any]:
             }
         )
     return {
-        "schema_version": ACCESS_MODEL_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "collection": {
             "id": collection.id,
             "label": collection.label,
@@ -308,10 +367,16 @@ def access_document(collection: AccessCollection) -> dict[str, Any]:
 
 def access_json(collection: AccessCollection) -> str:
     """Serialize a validated access graph as deterministic UTF-8 JSON text."""
-    value = json.dumps(access_document(collection), indent=2, sort_keys=True) + "\n"
+    value = _access_json(collection, ACCESS_MODEL_SCHEMA_VERSION)
     if len(value.encode("utf-8")) > MAX_ACCESS_JSON_BYTES:
         raise ValueError(f"access graph JSON exceeds {MAX_ACCESS_JSON_BYTES} bytes")
     return value
+
+
+def _access_json(collection: AccessCollection, schema_version: int) -> str:
+    return json.dumps(
+        _access_document(collection, schema_version), indent=2, sort_keys=True
+    ) + "\n"
 
 
 def access_segment_json(representation_id: str, segment: AccessSegment) -> str:
@@ -371,7 +436,10 @@ def load_access_collection(root: Path) -> AccessCollection:
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("access.json is not valid UTF-8 JSON") from exc
     collection = access_collection_from_document(document)
-    if source != access_json(collection):
+    schema_version = document.get("schema_version") if isinstance(document, dict) else None
+    if type(schema_version) is not int or source != _access_json(
+        collection, schema_version
+    ):
         raise ValueError("access.json is not canonical for its declared schema")
     return collection
 
@@ -383,7 +451,11 @@ def access_collection_from_document(value: object) -> AccessCollection:
         {"schema_version", "collection", "items", "artifacts", "relations"},
         "access document",
     )
-    if document["schema_version"] != ACCESS_MODEL_SCHEMA_VERSION:
+    schema_version = document["schema_version"]
+    if (
+        type(schema_version) is not int
+        or schema_version not in SUPPORTED_ACCESS_MODEL_SCHEMA_VERSIONS
+    ):
         raise ValueError("unsupported access model schema")
     collection_value = _object_with_keys(
         document["collection"],
@@ -391,7 +463,10 @@ def access_collection_from_document(value: object) -> AccessCollection:
         "access collection",
     )
     artifacts = tuple(_artifact_from_value(item) for item in _list(document["artifacts"], "artifacts"))
-    items = tuple(_item_from_value(item) for item in _list(document["items"], "items"))
+    items = tuple(
+        _item_from_value(item, schema_version)
+        for item in _list(document["items"], "items")
+    )
     relations = tuple(
         _relation_from_value(item) for item in _list(document["relations"], "relations")
     )
@@ -405,7 +480,7 @@ def access_collection_from_document(value: object) -> AccessCollection:
         relations,
         _string_tuple_value(collection_value["rights"], "collection rights"),
     )
-    if access_document(collection) != document:
+    if _access_document(collection, schema_version) != document:
         raise ValueError("access document does not match the canonical typed graph")
     return collection
 
@@ -415,6 +490,7 @@ def validate_access_indexes(root: Path) -> None:
     document_path = root / "access.json"
     if not document_path.exists():
         return
+    load_access_collection(root)
     if document_path.is_symlink() or document_path.stat().st_size > MAX_ACCESS_JSON_BYTES:
         raise ValueError("access.json is not a bounded regular file")
     try:
@@ -558,6 +634,16 @@ def _valid_text(value: object) -> bool:
     return isinstance(value, str) and len(value) <= MAX_ACCESS_TEXT_LENGTH
 
 
+def _valid_facet_text(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) <= MAX_ACCESS_TEXT_LENGTH
+        and bool(value)
+        and value == value.strip()
+        and not any(unicodedata.category(character) == "Cc" for character in value)
+    )
+
+
 def _valid_access_identifier(value: object) -> bool:
     return (
         isinstance(value, str)
@@ -611,10 +697,13 @@ def _artifact_from_value(value: object) -> AccessArtifact:
     )
 
 
-def _item_from_value(value: object) -> AccessItem:
+def _item_from_value(value: object, schema_version: int) -> AccessItem:
+    fields = {"id", "label", "type", "route", "citation", "rights", "representations"}
+    if schema_version >= 2:
+        fields.add("facets")
     item = _object_with_keys(
         value,
-        {"id", "label", "type", "route", "citation", "rights", "representations"},
+        fields,
         "item",
     )
     return AccessItem(
@@ -628,6 +717,27 @@ def _item_from_value(value: object) -> AccessItem:
             for representation in _list(item["representations"], "representations")
         ),
         _string_tuple_value(item["rights"], "item rights"),
+        (
+            tuple(
+                _facet_from_value(facet)
+                for facet in _list(item["facets"], "item facets")
+            )
+            if schema_version >= 2
+            else ()
+        ),
+    )
+
+
+def _facet_from_value(value: object) -> AccessFacet:
+    item = _object_with_keys(
+        value, {"key", "label", "values", "artifact_ids", "note"}, "facet"
+    )
+    return AccessFacet(
+        _string(item["key"], "facet key"),
+        _string(item["label"], "facet label"),
+        _string_tuple_value(item["values"], "facet values"),
+        _string_tuple_value(item["artifact_ids"], "facet artifacts"),
+        _optional_string(item["note"], "facet note"),
     )
 
 

@@ -181,7 +181,7 @@ navigation, status, provenance, and asset foundations.
 **Deliverables**
 
 - Add a shared reader shell with common typography, navigation, responsive layout, and inert local assets.
-- Define a minimal access model for Collection, Item, Representation, Relation, Segment, Artifact, rights, and provenance.
+- Define a minimal access model for Collection, Item, optional source-authored Facet values, Representation, Relation, Segment, Artifact, rights, and provenance.
 - Keep source-specific textual bodies and structures under recipe control.
 - Provide shared components for breadcrumbs, collection status, validation warnings, rights, provenance, artifact links, and citations.
 - Provide stable collection, item, representation, and segment URLs where the source supports those identities.

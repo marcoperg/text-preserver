@@ -14,6 +14,7 @@ from text_preserver.adapters import ReaderContext, ReaderReport
 from text_preserver.access.reader_model import (
     AccessArtifact,
     AccessCollection,
+    AccessFacet,
     AccessItem,
     AccessRelation,
     AccessRepresentation,
@@ -24,12 +25,14 @@ from text_preserver.access.reader_model import (
 )
 from text_preserver.access.reader_shell import (
     ReaderFact,
+    ReaderFacet,
     ReaderLink,
     reader_stylesheet,
     render_artifact_reference,
     render_citation,
     render_document,
     render_facts,
+    render_facets,
     render_navigation,
     render_notice,
     render_status,
@@ -37,6 +40,7 @@ from text_preserver.access.reader_shell import (
 
 from .validator import (
     BUILTIN_ENTITIES,
+    Composition,
     ENTITY_REF_RE,
     InventoryError,
     KNOWN_UNTRANSLATED,
@@ -46,6 +50,8 @@ from .validator import (
     _find_zip,
     _ota_support_files,
     _read_zip_text,
+    _sha256,
+    extract_inventory,
 )
 
 
@@ -134,20 +140,55 @@ TITLE_SUFFIXES = (
 COLLECTION_RIGHTS = (
     "Public access does not imply permission to redistribute captures; preserve the site's notices and repository metadata."
 )
+CATALOGUE_CAVEAT = (
+    "ETCSL states that this thematic arrangement reflects modern perceptions and may "
+    "suggest misleading relationships between compositions or genres."
+)
 
 
 def build_reader(context: ReaderContext) -> ReaderReport:
     """Build the existing ETCSL reader through the recipe API 2 contract."""
-    payload = render_static_reader(
+    payload = write_static_reader(
         context.capture_directory,
+        output_directory=context.output_directory,
         expected_work_count=context.expected_work_count,
     )
     return ReaderReport(
         payload["status"],
         payload["summary"],
         tuple(payload["warnings"]),
-        payload["files"],
     )
+
+
+def write_static_reader(
+    capture_directory: Path,
+    *,
+    output_directory: Path,
+    expected_work_count: int,
+) -> dict[str, object]:
+    """Write the reader within the adapter output sandbox and return a bounded report."""
+    payload = render_static_reader(
+        capture_directory,
+        expected_work_count=expected_work_count,
+    )
+    files = payload["files"]
+    if not isinstance(files, dict):
+        raise InventoryError("ETCSL reader produced invalid files")
+    output_directory.mkdir(parents=True, exist_ok=True)
+    for relative, source in files.items():
+        if not isinstance(relative, str) or not isinstance(source, str):
+            raise InventoryError("ETCSL reader produced invalid output files")
+        path = Path(relative)
+        if path.is_absolute() or ".." in path.parts:
+            raise InventoryError("ETCSL reader produced an unsafe output path")
+        destination = output_directory / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(source, encoding="utf-8")
+    return {
+        "status": payload["status"],
+        "summary": payload["summary"],
+        "warnings": payload["warnings"],
+    }
 
 
 def render_static_reader(
@@ -166,6 +207,20 @@ def render_static_reader(
         expected_work_count,
         support_files=_ota_support_files(package_files),
     )
+    catalogue_path = package_files.get("etcslfullcat.html")
+    catalogue: tuple[Composition, ...] = ()
+    catalogue_sha256: str | None = None
+    classification_warnings: list[str] = []
+    if catalogue_path is None:
+        classification_warnings.append(
+            "captured ETCSL catalogue is unavailable; human-readable classifications are omitted"
+        )
+    else:
+        try:
+            catalogue = extract_inventory(catalogue_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError) as exc:
+            raise InventoryError(f"cannot read captured ETCSL catalogue: {exc}") from exc
+        catalogue_sha256 = _sha256(catalogue_path)
     records: dict[str, dict[str, object]] = {}
     unresolved_entities: set[str] = set()
     with zipfile.ZipFile(archive_path) as archive:
@@ -189,7 +244,17 @@ def render_static_reader(
             record[key] = root
             record[f"{key}_path"] = info.filename
 
-    identifiers = sorted(records, key=_identifier_sort_key)
+    catalogue_ids = {composition.id for composition in catalogue}
+    for composition in catalogue:
+        record = records.get(composition.id)
+        if record is not None:
+            record["catalogue_path"] = composition.catalogue_path
+    identifiers = [composition.id for composition in catalogue if composition.id in records]
+    identifiers.extend(
+        sorted(set(records) - set(identifiers), key=_identifier_sort_key)
+    )
+    if not catalogue:
+        identifiers = sorted(records, key=_identifier_sort_key)
     if not identifiers:
         raise InventoryError("ETCSL deposit contains no text XML files")
     files: dict[str, str] = {
@@ -209,6 +274,19 @@ def render_static_reader(
             str(archive_report["sha256"]),
         )
     ]
+    catalogue_artifact_id: str | None = None
+    if catalogue_path is not None and catalogue_sha256 is not None:
+        catalogue_artifact_id = access_id("etcsl", "artifact", "ota-catalogue")
+        artifacts.append(
+            AccessArtifact(
+                catalogue_artifact_id,
+                "Deposited ETCSL catalogue",
+                "preservation_original",
+                catalogue_path.relative_to(capture_directory).as_posix(),
+                "text/html",
+                catalogue_sha256,
+            )
+        )
     access_items: list[AccessItem] = []
     relations: list[AccessRelation] = []
     titles: dict[str, str] = {}
@@ -233,6 +311,8 @@ def render_static_reader(
             next_id,
             archive_capture_path,
             package_artifact_id,
+            catalogue_path=_catalogue_path(records[identifier]),
+            catalogue_artifact_id=catalogue_artifact_id,
         )
         files[f"works/{identifier}.html"] = page
         access_items.append(item)
@@ -241,6 +321,25 @@ def render_static_reader(
         relations.extend(item_relations)
     warnings = [str(value) for value in archive_report["errors"]]
     warnings.extend(str(value) for value in archive_report["warnings"])
+    warnings.extend(classification_warnings)
+    reader_transliteration_ids = set(archive_report["transliteration_ids"])
+    missing_catalogue_ids = sorted(reader_transliteration_ids - catalogue_ids)
+    unavailable_catalogue_ids = sorted(catalogue_ids - reader_transliteration_ids)
+    if missing_catalogue_ids:
+        warnings.append(
+            f"{len(missing_catalogue_ids)} reader compositions have no deposited catalogue classification"
+        )
+    if unavailable_catalogue_ids:
+        warnings.append(
+            f"{len(unavailable_catalogue_ids)} deposited catalogue compositions have no reader transliteration"
+        )
+    classified_ids = {
+        composition.id for composition in catalogue if composition.catalogue_path
+    }
+    if catalogue and classified_ids != catalogue_ids:
+        warnings.append(
+            f"{len(catalogue_ids - classified_ids)} catalogue compositions have no source classification path"
+        )
     if unresolved_entities:
         warnings.append(
             f"{len(unresolved_entities)} named entities are displayed as source tokens"
@@ -248,8 +347,13 @@ def render_static_reader(
     warnings.append(
         "first reader version omits bibliography linking and advanced stand-off annotations"
     )
-    reader_transliteration_ids = set(archive_report["transliteration_ids"])
     reader_translation_ids = set(archive_report["translation_ids"])
+    catalogue_inventory_complete = (
+        catalogue_path is not None and catalogue_ids == reader_transliteration_ids
+    )
+    classification_paths_complete = (
+        not classified_ids or classified_ids == catalogue_ids
+    )
     inventory_complete = (
         len(reader_transliteration_ids) == expected_work_count
         and reader_translation_ids == reader_transliteration_ids - KNOWN_UNTRANSLATED
@@ -258,6 +362,8 @@ def render_static_reader(
         and archive_report["entity_stubbed_xml_parse_count"]
         == archive_report["xml_file_count"]
         and archive_report["filename_id_match_count"] == archive_report["xml_file_count"]
+        and catalogue_inventory_complete
+        and classification_paths_complete
     )
     status = (
         "incomplete"
@@ -273,6 +379,7 @@ def render_static_reader(
         status,
         warnings,
         package_artifact_id,
+        catalogue_artifact_id,
     )
     files["access.json"] = access_json(
         AccessCollection(
@@ -297,6 +404,8 @@ def render_static_reader(
             "translation_count": sum("translation" in record for record in records.values()),
             "unresolved_entity_names": sorted(unresolved_entities),
             "archive_sha256": archive_report["sha256"],
+            "catalogue_sha256": catalogue_sha256,
+            "classified_work_count": len(classified_ids & set(records)),
         },
         "warnings": warnings,
     }
@@ -350,6 +459,13 @@ def _identifier_sort_key(identifier: str) -> tuple[tuple[int, object], ...]:
     )
 
 
+def _catalogue_path(record: dict[str, object]) -> tuple[str, ...]:
+    value = record.get("catalogue_path")
+    if isinstance(value, tuple) and all(isinstance(item, str) for item in value):
+        return value
+    return ()
+
+
 def _render_reader_index(
     identifiers: Sequence[str],
     titles: dict[str, str],
@@ -359,16 +475,18 @@ def _render_reader_index(
     status: str,
     warnings: Sequence[str],
     package_artifact_id: str,
+    catalogue_artifact_id: str | None,
 ) -> str:
     entries: list[str] = []
     current_group: str | None = None
     for identifier in identifiers:
-        group = identifier.split(".", 1)[0]
+        path = _catalogue_path(records[identifier])
+        group = path[0] if path else f"Catalogue group {identifier.split('.', 1)[0]}"
         if group != current_group:
             if current_group is not None:
                 entries.append("</ol></section>")
             entries.append(
-                f'<section class="catalogue-group"><h2>Group {escape_html(group)}</h2><ol>'
+                f'<section class="catalogue-group"><h2>{escape_html(group)}</h2><ol>'
             )
             current_group = group
         record = records[identifier]
@@ -377,12 +495,20 @@ def _render_reader_index(
             representations.append("transliteration")
         if "translation" in record:
             representations.append("translation")
+        path_html = (
+            '<span class="catalogue-path">{}</span>'.format(
+                escape_html(" › ".join(path[1:]))
+            )
+            if len(path) > 1
+            else ""
+        )
         entries.append(
             '<li><a href="works/{identifier}.html"><span class="work-id">{identifier}</span> '
-            '<span class="work-title">{title}</span></a>'
+            '<span class="work-title">{title}</span>{path}</a>'
             ' <span class="representations">{representations}</span></li>'.format(
                 identifier=escape_html(identifier, quote=True),
                 title=escape_html(titles[identifier]),
+                path=path_html,
                 representations=escape_html(" / ".join(representations)),
             )
         )
@@ -399,6 +525,7 @@ def _render_reader_index(
 </header>
 <main class="reader-main">
   {render_notice("This is not the original ETCSL website. ETCSL character, determinative, subscript, and editorial entities are rendered from the corpus support declarations; any unknown entity remains visible as its source token.")}
+  {render_notice(CATALOGUE_CAVEAT) if any(_catalogue_path(records[identifier]) for identifier in identifiers) else ""}
   {render_notice(COLLECTION_RIGHTS)}
   {render_status(status, warnings)}
   <div class="catalogue-meta"><span>{len(identifiers)} compositions</span>
@@ -406,7 +533,8 @@ def _render_reader_index(
   {content}
 </main>
 <footer class="reader-footer">Canonical archive SHA-256: <code>{escape_html(str(archive_sha256))}</code>
-{render_artifact_reference("Machine-readable source artifact", package_artifact_id, "access.json")}</footer>
+ {render_artifact_reference("Machine-readable source artifact", package_artifact_id, "access.json")}
+ {render_artifact_reference("Catalogue classification source", catalogue_artifact_id, "access.json") if catalogue_artifact_id else ""}</footer>
 """,
         collection_stylesheet="etcsl.css",
     )
@@ -422,6 +550,9 @@ def _render_work_page(
     next_id: str | None,
     archive_capture_path: str,
     package_artifact_id: str,
+    *,
+    catalogue_path: tuple[str, ...] = (),
+    catalogue_artifact_id: str | None = None,
 ) -> tuple[str, AccessItem, tuple[AccessArtifact, ...], tuple[AccessRelation, ...]]:
     navigation = render_navigation(
         (ReaderLink("ETCSL catalogue", "../index.html"),),
@@ -504,6 +635,17 @@ def _render_work_page(
             )
         )
     citation_text = f"ETCSL {identifier}, {title}. Derived from capture {capture_id}."
+    access_facets: list[AccessFacet] = []
+    if catalogue_path:
+        access_facets.append(
+            AccessFacet(
+                "catalogue_path",
+                "ETCSL catalogue path",
+                (" › ".join(catalogue_path),),
+                ((catalogue_artifact_id,) if catalogue_artifact_id else ()),
+                CATALOGUE_CAVEAT,
+            )
+        )
     item = AccessItem(
         item_id,
         title,
@@ -511,14 +653,33 @@ def _render_work_page(
         route,
         citation_text,
         tuple(representations),
+        facets=tuple(access_facets),
     )
     citation = render_citation(citation_text, item_id)
+    classification = render_facets(
+        (
+            ReaderFacet(
+                "ETCSL catalogue path",
+                (" › ".join(catalogue_path),),
+                CATALOGUE_CAVEAT,
+            ),
+        )
+        if catalogue_path
+        else ()
+    )
+    classification_source = (
+        render_artifact_reference(
+            "Catalogue classification source", catalogue_artifact_id, "../access.json"
+        )
+        if catalogue_path and catalogue_artifact_id is not None
+        else ""
+    )
     page = render_document(
         f"{identifier} {title}",
         f"""
 {navigation}
 <header class="reader-header"><p class="reader-eyebrow">ETCSL {escape_html(identifier)}</p>
-<h1>{escape_html(title)}</h1></header>
+<h1>{escape_html(title)}</h1>{classification}{classification_source}</header>
 <main class="reader-main"><div class="parallel-text">{''.join(columns)}</div>{citation}</main>
 <footer class="reader-footer">{provenance}</footer>
 """,
@@ -736,7 +897,8 @@ list-style:none;padding:0}.catalogue-group li{display:grid;grid-template-columns
 border-top:1px solid var(--reader-rule);padding:.8rem 0}.catalogue-group a{text-decoration:none}
 .work-id,.line-number,.source-path{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .work-id{display:inline-block;width:7rem;color:var(--reader-accent)}.representations{
-color:var(--reader-muted);font-size:.82rem}.parallel-text{display:grid;grid-template-columns:
+color:var(--reader-muted);font-size:.82rem}.catalogue-path{display:block;margin:.2rem 0 0 7rem;
+color:var(--reader-muted);font-size:.84rem}.parallel-text{display:grid;grid-template-columns:
 minmax(0,1fr) minmax(0,1fr);gap:2rem;align-items:start}.representation{min-width:0;
 padding:1.5rem;background:var(--reader-sheet);border:1px solid var(--reader-rule)}
 .representation>header{border-bottom:1px solid var(--reader-rule);margin-bottom:1.5rem}
@@ -749,5 +911,5 @@ font-style:italic}.unclear{text-decoration:underline dotted}.correction{border-b
 var(--reader-accent)}.determinative{font-style:normal}.ruling{display:inline-block;min-width:7rem;
 color:var(--reader-muted);letter-spacing:.1em}.trailer{border-top:1px solid var(--reader-rule);
 padding-top:1rem;font-style:italic}@media(max-width:800px){.parallel-text,.catalogue-group li{
-grid-template-columns:1fr}}@media print{.representation{border:0;padding:0}}
+grid-template-columns:1fr}.catalogue-path{margin-left:0}}@media print{.representation{border:0;padding:0}}
 """

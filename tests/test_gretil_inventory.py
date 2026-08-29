@@ -179,12 +179,15 @@ class GretilInventoryTests(unittest.TestCase):
                                 (
                                     '<TEI xmlns="http://www.tei-c.org/ns/1.0" '
                                     f'xml:id="{root_id}"><teiHeader><fileDesc>'
-                                    f"<titleStmt><title>{identifier}</title></titleStmt>"
+                                    f"<titleStmt><title>{identifier}</title>"
+                                    "<author>Fixture Author</author></titleStmt>"
                                     '<publicationStmt><availability status="free">'
                                     '<p>Fixture rights</p><licence target="https://example.org/terms"/>'
                                     "</availability></publicationStmt>"
                                     "<sourceDesc><p>Fixture source</p></sourceDesc>"
-                                    "</fileDesc></teiHeader><text><body>"
+                                    "</fileDesc><profileDesc><textClass><keywords>"
+                                    "<term>Sanskrit -- Narrative</term><term>Epic</term>"
+                                    "</keywords></textClass></profileDesc></teiHeader><text><body>"
                                     '<p xml:id="paragraph-1">Fixture body '
                                     '<note xml:id="note-1">Fixture note</note></p>'
                                     "</body></text></TEI>"
@@ -246,16 +249,29 @@ class GretilInventoryTests(unittest.TestCase):
             self.assertIn('id="representation-tei"', first_page)
             self.assertIn("Fixture rights", first_page)
             self.assertIn("Fixture source", first_page)
+            self.assertIn("Fixture Author", first_page)
+            self.assertIn("TEI keyword", first_page)
+            self.assertIn("Sanskrit -- Narrative", first_page)
             self.assertIn('href="../assets/reader.css"', first_page)
             self.assertIn("Access build complete with warnings", (reader_output / "index.html").read_text())
             self.assertIn(".reader-nav", (reader_output / "assets/reader.css").read_text())
             self.assertIn(".tei-text", (reader_output / "assets/gretil.css").read_text())
             access = json.loads((reader_output / "access.json").read_text())
-            self.assertEqual(access["schema_version"], 1)
+            self.assertEqual(access["schema_version"], 2)
             self.assertEqual(access["collection"]["id"], "tp:gretil/collection")
             self.assertIn("Rights vary by item", access["collection"]["rights"][0])
             self.assertEqual(len(access["items"]), 3)
             self.assertEqual(access["items"][0]["representations"][0]["kind"], "tei")
+            facets = {facet["key"]: facet for facet in access["items"][0]["facets"]}
+            self.assertEqual(facets["author"]["values"], ["Fixture Author"])
+            self.assertEqual(
+                facets["tei_keyword"]["values"],
+                ["Sanskrit -- Narrative", "Epic"],
+            )
+            self.assertEqual(
+                facets["tei_keyword"]["artifact_ids"],
+                access["items"][0]["representations"][0]["artifact_ids"],
+            )
             self.assertEqual(
                 access["items"][0]["representations"][0]["segment_index"],
                 "access-segments.jsonl",

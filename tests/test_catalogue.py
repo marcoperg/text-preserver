@@ -12,6 +12,7 @@ import unittest
 
 from text_preserver.access.catalogue import (
     _extract_representation,
+    _render_item_facets,
     _validate_database,
     build_catalogue,
     current_catalogue_index,
@@ -22,8 +23,10 @@ from text_preserver.access.reader import _validate_streamed_reader_tree
 from text_preserver.access.reader_model import (
     AccessCollection,
     AccessArtifact,
+    AccessFacet,
     AccessItem,
     AccessRepresentation,
+    access_document,
     access_id,
     access_json,
 )
@@ -85,6 +88,7 @@ allowed_hosts = ["example.org"]
         language: str = "en",
         kind: str = "translation",
         count: int = 1,
+        schema_one: bool = False,
     ) -> Path:
         derived = self.root / "data/derived"
         capture_id = "20260829T120000Z-a1b2c3"
@@ -124,6 +128,14 @@ allowed_hosts = ["example.org"]
                             (artifact_id,),
                         ),
                     ),
+                    facets=(
+                        AccessFacet(
+                            "category",
+                            "Source category",
+                            ("Narrative literature",),
+                            note="Source categories are provisional.",
+                        ),
+                    ),
                 )
             )
             index_links.append(f'<a href="{route}">Work {number}</a>')
@@ -151,7 +163,15 @@ allowed_hosts = ["example.org"]
                 ),
             ),
         )
-        (generation / "access.json").write_text(access_json(graph), encoding="utf-8")
+        if schema_one:
+            document = access_document(graph)
+            document["schema_version"] = 1
+            for item in document["items"]:
+                item.pop("facets")
+            access_source = json.dumps(document, indent=2, sort_keys=True) + "\n"
+        else:
+            access_source = access_json(graph)
+        (generation / "access.json").write_text(access_source, encoding="utf-8")
         (generation / "index.html").write_text(
             f"<!doctype html><html><body>{''.join(index_links)}</body></html>",
             encoding="utf-8",
@@ -201,6 +221,10 @@ allowed_hosts = ["example.org"]
         self.assertEqual(catalogue["collections"][1]["access_state"], "unavailable")
         self.assertEqual(catalogue["collections"][0]["artifacts"][0]["label"], "Source XML")
         self.assertEqual(
+            catalogue["collections"][0]["items"][0]["facets"][0]["values"],
+            ["Narrative literature"],
+        )
+        self.assertEqual(
             catalogue["collections"][0]["items"][0]["representations"][0]["artifact_ids"],
             ["tp:alpha/artifact/source.xml"],
         )
@@ -212,6 +236,9 @@ allowed_hosts = ["example.org"]
             )
         page = first.index_path.read_text(encoding="utf-8")
         self.assertIn("Work One", page)
+        self.assertIn("Source category", page)
+        self.assertIn("Narrative literature", page)
+        self.assertIn("Source categories are provisional.", page)
         self.assertIn("../../collections/alpha/captures/", page)
         self.assertNotIn("<script", page)
 
@@ -399,6 +426,38 @@ allowed_hosts = ["example.org"]
 
         with self.assertRaises(sqlite3.DatabaseError):
             _validate_database(result.database_path, verify_external_content=True)
+
+    def test_catalogue_ingests_canonical_schema_one_reader(self) -> None:
+        self.create_reader("alpha", schema_one=True)
+
+        result = build_catalogue(load_config(self.config_path), ("alpha",))
+
+        self.assertEqual(result.metadata["summary"]["document_count"], 1)
+        self.assertEqual(search_catalogue(load_config(self.config_path), "divine").hits[0].title, "Work One")
+
+    def test_database_validation_accepts_persisted_schema_one_index(self) -> None:
+        self.create_reader("alpha")
+        result = build_catalogue(load_config(self.config_path), ("alpha",))
+        result.output_directory.chmod(0o755)
+        result.database_path.chmod(0o644)
+        with closing(sqlite3.connect(result.database_path)) as connection:
+            connection.execute("PRAGMA user_version=1")
+
+        _validate_database(result.database_path)
+        with self.assertRaisesRegex(ValueError, "schema version"):
+            _validate_database(result.database_path, expected_schema_version=2)
+
+    def test_compact_facets_do_not_infer_hierarchy_from_value_punctuation(self) -> None:
+        rendered = _render_item_facets(
+            [
+                {"label": "Category", "values": ["Narrative"]},
+                {"label": "Path", "values": ["Narrative › Heroes › Gilgameš"]},
+            ]
+        )
+
+        self.assertIn("<dt>Category</dt>", rendered)
+        self.assertIn("<dt>Path</dt>", rendered)
+        self.assertEqual(rendered.count("Narrative"), 2)
 
 
 if __name__ == "__main__":

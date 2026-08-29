@@ -61,7 +61,7 @@ text-preserver derive reader gretil -c collections.toml
 text-preserver open reader gretil -c collections.toml
 ```
 
-The `reader.py` adapter uses `1_sanskr.zip` as the publisher's aggregate TEI container, requires all 801 reviewed register identifiers, and explicitly excludes the one bulk-only record. It parses and writes one work at a time so the complete corpus does not need to be held in memory. The resulting reader contains full text, selected TEI header metadata, exact item-level availability and source statements, language and category labels, filename/root/register identity mappings, capture provenance, and responsive previous/next navigation.
+The `reader.py` adapter uses `1_sanskr.zip` as the publisher's aggregate TEI container, requires all 801 reviewed register identifiers, and explicitly excludes the one bulk-only record. It parses and writes one work at a time so the complete corpus does not need to be held in memory. The resulting reader contains full text, selected TEI header metadata, exact item-level availability and source statements, language labels, authors and TEI keyword terms exposed through the shared facet contract, filename/root/register identity mappings, capture provenance, and responsive previous/next navigation.
 
 Reader output is rebuildable derived data, not a new preservation master or a claim of collection-wide redistribution rights. It loads no scripts or remote resources. TEI mixed content, verse, page and line breaks, apparatus, supplied or unclear text, gaps, and common renditions remain visible; stand-off references and unrecognized source rendition tokens are retained as inert annotations rather than resolved externally.
 

@@ -10,7 +10,7 @@ from typing import Mapping, Sequence
 from urllib.parse import urlsplit
 
 
-READER_SHELL_SCHEMA_VERSION = 1
+READER_SHELL_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,15 @@ class ReaderFact:
 
     label: str
     value: str
+
+
+@dataclass(frozen=True)
+class ReaderFacet:
+    """One human-readable, source-authored item facet."""
+
+    label: str
+    values: tuple[str, ...]
+    note: str | None = None
 
 
 def reader_shell_identity() -> Mapping[str, object]:
@@ -122,6 +131,21 @@ def render_facts(facts: Sequence[ReaderFact]) -> str:
     return f'<dl class="reader-facts">{values}</dl>'
 
 
+def render_facets(facets: Sequence[ReaderFacet]) -> str:
+    """Render optional item metadata without imposing a shared hierarchy."""
+    values = "".join(
+        f'<div class="reader-facet"><dt>{escape(facet.label)}</dt><dd>'
+        + '<ul aria-label="Values">'
+        + "".join(f"<li>{escape(value)}</li>" for value in facet.values)
+        + "</ul>"
+        + (f'<p class="reader-facet-note">{escape(facet.note)}</p>' if facet.note else "")
+        + "</dd></div>"
+        for facet in facets
+        if facet.values
+    )
+    return f'<dl class="reader-facets">{values}</dl>' if values else ""
+
+
 def render_artifact_reference(label: str, artifact_id: str, href: str) -> str:
     """Link visible provenance to its record in the local access graph."""
     return (
@@ -161,13 +185,19 @@ var(--reader-rule);background:var(--reader-sheet)}.reader-status p{margin:.2rem 
 border-left:4px solid var(--reader-accent)}.reader-status details{margin:.65rem 0 0}.reader-status ul{
 margin:.65rem 0}.reader-facts{display:grid;grid-template-columns:max-content minmax(0,1fr);
 gap:.35rem .8rem}.reader-facts dt{font-weight:700}.reader-facts dd{margin:0;min-width:0}
+.reader-facets{display:grid;gap:.65rem;margin:1rem 0}.reader-facet{display:grid;
+grid-template-columns:minmax(8rem,max-content) minmax(0,1fr);gap:.35rem 1rem}.reader-facet dt{
+font-weight:700;overflow-wrap:anywhere}.reader-facet dd{min-width:0;margin:0}.reader-facet ul{display:flex;
+flex-wrap:wrap;gap:.35rem;margin:0;padding:0;list-style:none}.reader-facet li{min-width:0;padding:.12rem .5rem;
+border:1px solid var(--reader-rule);background:var(--reader-sheet);overflow-wrap:anywhere}
+.reader-facet-note{margin:.4rem 0;color:var(--reader-muted);font-size:.84rem}
 .reader-artifact{font-size:.82rem}.reader-citation{margin:2rem 0;padding:1rem 1.2rem;
 border-top:1px solid var(--reader-rule);border-bottom:1px solid var(--reader-rule)}
 .reader-citation h2{font-size:1rem}.reader-citation p{margin:.4rem 0}
 .reader-main,.reader-footer{width:min(1160px,92vw);margin:2rem auto}.reader-footer{padding:1rem 0 3rem;
 border-top:1px solid var(--reader-rule);color:var(--reader-muted);font-size:.76rem}
 @media(max-width:650px){.reader-nav{display:block}.reader-adjacent{justify-content:space-between;
-margin-top:.8rem}.reader-facts{grid-template-columns:1fr}.reader-facts dd{margin:0 0 .6rem}}
+margin-top:.8rem}.reader-facts,.reader-facet{grid-template-columns:1fr}.reader-facts dd{margin:0 0 .6rem}}
 @media print{body{background:#fff}.reader-nav{display:none}.reader-status details:not([open]){display:none}}
 """
 
