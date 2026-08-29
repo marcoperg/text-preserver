@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from typing import Any, Sequence
 
-from text_preserver.capture.engines.wget import WgetCommand, build_wget_command
+from text_preserver.preservation.capture.engines.wget import WgetCommand, build_wget_command
 from text_preserver.config import CollectionConfig, Config, SourceConfig
 
 

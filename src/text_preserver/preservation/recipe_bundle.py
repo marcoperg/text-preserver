@@ -1,4 +1,4 @@
-"""Safely inventory, copy, and verify versioned recipe bundles."""
+"""Safely preserve and verify versioned recipe bundles."""
 
 from __future__ import annotations
 

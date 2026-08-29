@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from text_preserver.analysis import _load_adapter
+from text_preserver.adapters import _load_adapter
 
 
 REPOSITORY_ROOT = Path(__file__).parents[1]

@@ -9,8 +9,8 @@ import unittest
 import xml.etree.ElementTree as ElementTree
 import zipfile
 
-from text_preserver.capture import plan_capture
-from text_preserver.analysis import _load_adapter
+from text_preserver.preservation.capture import plan_capture
+from text_preserver.adapters import _load_adapter
 from text_preserver.config import load_config
 
 

@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from text_preserver.capture import plan_capture
+from text_preserver.preservation.capture import plan_capture
 from text_preserver.config import load_config
 
 

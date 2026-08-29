@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from text_preserver.recipe_bundle import (
+from text_preserver.preservation.recipe_bundle import (
     RecipeBundleError,
     copy_bundle,
     scan_declared_assets,

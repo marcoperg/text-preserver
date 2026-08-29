@@ -54,6 +54,34 @@ class CollectionsCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 2)
         self.assertIn("unknown collection", errors.getvalue())
 
+    def test_status_reports_four_dimensions_without_aggregate(self) -> None:
+        output = StringIO()
+
+        with redirect_stdout(output):
+            exit_code = main(
+                ["collections", "status", "test-collection", "-c", str(self.config_path), "--json"]
+            )
+
+        document = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(document["schema_version"], 1)
+        self.assertEqual(
+            {document[name]["state"] for name in ("acquisition", "fixity", "validation", "access")},
+            {"not_acquired", "not_finalized", "not_run"},
+        )
+        self.assertNotIn("status", document)
+
+    def test_status_text_has_four_separate_lines(self) -> None:
+        output = StringIO()
+
+        with redirect_stdout(output):
+            exit_code = main(
+                ["collections", "status", "test-collection", "-c", str(self.config_path)]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(output.getvalue().splitlines()), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

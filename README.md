@@ -2,7 +2,7 @@
 
 **Preserve vulnerable digital text collections and the context that makes them intelligible.**
 
-> **Status: early implementation.** Configuration validation, installable ETCSL and GRETIL recipes, diagnostics, guarded Wget capture, fixity verification, conservative `LATEST` pointers, collection-specific completeness analysis, and local static readers for ETCSL and GRETIL are available.
+> **Status: early implementation.** Configuration validation, installable ETCSL and GRETIL recipes, diagnostics, guarded Wget capture, fixity verification, explicit acquisition/validation/reader pointers, collection-specific completeness validation, lifecycle status, and deterministic local static readers are available.
 
 `text-preserver` is a local-first system for preserving scholarly corpora, digital editions, historical text archives, specialist bibliographies, and old academic websites that may become unavailable or difficult to reconstruct.
 
@@ -73,6 +73,7 @@ text-preserver doctor --config collections.toml
 text-preserver collections list --config collections.toml
 text-preserver collections show etcsl --config collections.toml
 text-preserver collections show gretil --config collections.toml
+text-preserver collections status etcsl --config collections.toml --json
 ```
 
 The example configuration references the public recipes as `public:etcsl`, `public:gretil`, and `public:sacred-texts`. Local configuration owns operator identity, storage paths, and capture defaults; recipes own public collection metadata, sources, scope, and analysis settings. External recipe files require top-level `recipe_api = 1`; inline `[[collections]]` do not.
@@ -115,18 +116,18 @@ Verify a finalized capture:
 text-preserver verify /path/to/capture
 ```
 
-Verification checks object types, sizes, SHA-256 hashes, missing objects, and unexpected additions. Symlinks are rejected. A complete, verified, unfiltered capture updates the collection's portable `LATEST` pointer; warning, partial, failed, interrupted, and source-filtered captures never do. Each successful source also updates a portable `LATEST-SOURCE_ID` pointer after whole-capture fixity verification, so independently captured sources remain convenient to locate.
+Verification checks object types, sizes, SHA-256 hashes, missing objects, and unexpected additions. Symlinks are rejected. A complete, verified, unfiltered capture updates the collection's portable `LATEST-ACQUIRED` pointer; warning, partial, failed, interrupted, and source-filtered captures never do. The Python/result field `latest_updated` is retained for compatibility and means that this canonical acquisition pointer was updated. Existing `LATEST` files remain readable when `LATEST-ACQUIRED` is absent, but are never rewritten or deleted; malformed canonical pointers fail closed. Each successful source also updates a portable `LATEST-SOURCE_ID` pointer after whole-capture fixity verification, so independently captured sources remain convenient to locate.
 
 Run collection-specific completeness analysis after fixity verification:
 
 ```bash
-text-preserver analyze preservation etcsl \
+text-preserver validate etcsl \
   --config collections.toml
-text-preserver analyze preservation gretil /path/to/capture-a /path/to/capture-b \
+text-preserver validate gretil /path/to/capture-a /path/to/capture-b \
   --config collections.toml
 ```
 
-With no explicit path, analysis verifies and deduplicates collection `LATEST` plus every `LATEST-SOURCE_ID`, then deterministically chooses one provider per source, preferring successful sources and newer capture IDs. One or more explicit paths restrict the candidate set to exactly those captures. Cross-capture analysis exposes only the selected verified source directories through a temporary aggregate view and uses the current recipe adapter with an explicit warning; single-capture analysis prefers the adapter from a verified captured bundle. Its `__file__` remains inside that complete bundle, so recipe-relative runtime fixtures and templates continue to work. Immutable old captures containing only `metadata/recipe-assets/` remain analyzable through an explicitly identified legacy fallback with no bundle digest or recipe API.
+With no explicit path, validation verifies and deduplicates `LATEST-ACQUIRED` (or legacy `LATEST` only when the canonical pointer is absent) plus existing pointers for configured source IDs, then deterministically chooses one provider per source, preferring successful sources and newer capture IDs. Arbitrary `LATEST-*` files are not interpreted as source pointers. One or more explicit paths restrict the candidate set to exactly those captures. Cross-capture validation exposes only the selected verified source directories through a temporary aggregate view and uses the current recipe adapter with an explicit warning; single-capture validation prefers the adapter from a verified captured bundle. Its `__file__` remains inside that complete bundle, so recipe-relative runtime fixtures and templates continue to work. Immutable old captures containing only `metadata/recipe-assets/` remain analyzable through an explicitly identified legacy fallback with no bundle digest or recipe API. `text-preserver analyze preservation` remains a deprecated version-0.1 alias with identical output and exit codes; its warning is written only to stderr.
 
 Reports are immutable and input-addressed at `derived/collections/COLLECTION_ID/validations/VALIDATION_ID/report.json`. The identity covers contributing capture manifests, source selection, adapter, effective analysis settings, configuration, and the used recipe bundle digest/API. Preserved adapters verify and identify the captured manifest; current external recipes rescan their complete directory; current inline code rescans only declared assets. Reader metadata records the same current-code identity. Malformed or mismatched manifests are rejected. An identical invocation safely reuses the existing report. `validations/LATEST` records the latest invoked validation, including an incomplete one. Collection-level `LATEST-VALIDATED` advances only for `complete` or `complete_with_warnings` results, so an incomplete run cannot replace the latest usable validation. The ETCSL adapter compares catalogue IDs with deposited XML filenames, checks ZIP safety and CRCs, performs entity-stubbed XML-shell parsing, verifies root IDs, and reports missing entity and DTD dependencies separately from work-level completeness.
 
@@ -140,7 +141,11 @@ text-preserver derive reader etcsl /path/to/capture \
 text-preserver derive reader gretil --config collections.toml
 ```
 
-The capture path may be omitted. A recipe's `reader_source` selects its newest verified source capture through `LATEST-SOURCE_ID`, with collection `LATEST` as the fallback. Reader generations are written under the capture-scoped `derived/` directory; a successful build atomically updates `derived/collections/COLLECTION_ID/reader` to the immutable current generation. Incomplete builds remain inspectable but never replace that pointer.
+The capture path may be omitted. Selection prefers `LATEST-ACQUIRED`, then legacy `LATEST` only when canonical is absent, then a configured `reader_source` pointer when no full-capture pointer exists. Reader metadata schema 3 records canonical semantic `build_inputs`, their full SHA-256 `build_key`, and a canonical output-tree digest and counts. The key covers collection and reader schema, the capture manifest, selected source IDs, recipe API/bundle digest, renderer bytes and entry point, and expected work count; it excludes timestamps, capture IDs, paths, raw configuration, and operator/storage settings. The adapter still runs on every invocation. Matching output reuses the immutable full-key generation; a same-key mismatch or corrupt generation moves the candidate to read-only `reader-quarantine/` with a reproducibility report and changes no pointers.
+
+Every published or reused generation updates the capture-scoped `reader` link. A usable build also updates regular text pointer `derived/collections/COLLECTION_ID/LATEST-READER` and the stable `reader` symlink used by `open reader`; incomplete builds update neither collection indicator. Reading current access prefers and validates `LATEST-READER`, requires it to agree with the symlink, and falls back to the legacy symlink only when canonical metadata is absent.
+
+`text-preserver collections status COLLECTION_ID` is read-only and runs no adapters. It reports acquisition, fixity, validation, and access independently, with no aggregate state; `--json` emits the stable schema-version-1 document.
 
 Open the current reader in the default browser, or print its stable local path for another program such as Emacs EWW:
 
@@ -206,15 +211,9 @@ Preservation and verification will not require Ciao, Org mode, embeddings, or an
 
 ## Development
 
-The near-term work is deliberately narrower than the full design:
+Development is preservation-gated: stabilize preservation contracts first, build deterministic access on those contracts, and add research clients only after stable identifiers exist.
 
-1. Define capture, manifest, and collection-recipe schemas.
-2. Build the Python CLI and GNU Wget capture engine.
-3. Implement manifests, fixity verification, statuses, and collection locks.
-4. Complete the ETCSL preservation vertical slice.
-5. Add derived cataloguing and access features without coupling them to the archive.
-
-The complete architecture, data model, collection studies, testing strategy, and phased roadmap are in [`docs/design.md`](docs/design.md).
+The complete architecture, data model, collection studies, and testing strategy are in [`docs/design.md`](docs/design.md). The canonical status-tracked implementation sequence, exit criteria, critique traceability, and version 0.1 release gate are in [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Legal and Ethical Use
 

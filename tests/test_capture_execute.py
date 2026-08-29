@@ -10,15 +10,15 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from text_preserver.capture import CaptureExecutionError, execute_capture
-from text_preserver.capture.execute import (
+from text_preserver.preservation.capture import CaptureExecutionError, execute_capture
+from text_preserver.preservation.capture.execute import (
     _aggregate_status,
     _valid_pointer_target,
     collection_lock,
     termination_signals_as_interrupts,
 )
 from text_preserver.config import load_config
-from text_preserver.manifest import finalize_capture
+from text_preserver.preservation.fixity import finalize_capture
 
 from tests.test_config import VALID_CONFIG
 
@@ -161,12 +161,39 @@ class CaptureExecutionTests(unittest.TestCase):
 
         self.assertFalse(_valid_pointer_target(capture, source_id=None))
 
+    def test_full_pointer_target_requires_successful_records_for_all_sources(self) -> None:
+        capture = (
+            self.root
+            / "data/archive/collections/test-collection/captures/20260829T120000Z-c1d2e3"
+        )
+        metadata = capture / "metadata"
+        metadata.mkdir(parents=True)
+        (capture / "capture.json").write_text(
+            json.dumps(
+                {
+                    "capture_id": capture.name,
+                    "collection_id": "test-collection",
+                    "status": "complete",
+                    "selected_sources": ["web", "dataset"],
+                    "sources": [{"source_id": "web", "status": "complete"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (metadata / "resolved-collection.json").write_text(
+            json.dumps({"sources": [{"id": "web"}, {"id": "dataset"}]}),
+            encoding="utf-8",
+        )
+        finalize_capture(capture)
+
+        self.assertFalse(_valid_pointer_target(capture, source_id=None))
+
     @patch(
-        "text_preserver.capture.execute._run_wget",
+        "text_preserver.preservation.capture.execute._run_wget",
         side_effect=wget_with_warning,
     )
     @patch(
-        "text_preserver.capture.execute._validated_wget",
+        "text_preserver.preservation.capture.execute._validated_wget",
         return_value=("/usr/bin/wget", "GNU Wget test"),
     )
     def test_successful_source_with_warnings_updates_source_pointer(
@@ -231,11 +258,11 @@ class CaptureExecutionTests(unittest.TestCase):
         )
 
     @patch(
-        "text_preserver.capture.execute._run_wget",
+        "text_preserver.preservation.capture.execute._run_wget",
         side_effect=wget_with_mirror,
     )
     @patch(
-        "text_preserver.capture.execute._validated_wget",
+        "text_preserver.preservation.capture.execute._validated_wget",
         return_value=("/usr/bin/wget", "GNU Wget test"),
     )
     def test_mirror_payload_metrics_and_aliases(
@@ -260,7 +287,7 @@ class CaptureExecutionTests(unittest.TestCase):
         self.assertIsNone(source["payloads"]["warc"]["indexed_records"])
 
     @patch(
-        "text_preserver.capture.execute._validated_wget",
+        "text_preserver.preservation.capture.execute._validated_wget",
         return_value=("/usr/bin/wget", "GNU Wget test"),
     )
     def test_header_only_cdx_and_metadata_warc_are_not_substantive(
@@ -274,7 +301,10 @@ class CaptureExecutionTests(unittest.TestCase):
             (warc_root / "tmp/temporary.warc.gz").write_bytes(b"temporary")
             return subprocess.CompletedProcess([], 0, "", "")
 
-        with patch("text_preserver.capture.execute._run_wget", side_effect=mock_wget):
+        with patch(
+            "text_preserver.preservation.capture.execute._run_wget",
+            side_effect=mock_wget,
+        ):
             result = execute_capture(
                 load_config(self.config_path),
                 "test-collection",
@@ -293,7 +323,7 @@ class CaptureExecutionTests(unittest.TestCase):
         self.assertIn("no mirror files or WARC response/resource evidence", source["error"])
 
     @patch(
-        "text_preserver.capture.execute._validated_wget",
+        "text_preserver.preservation.capture.execute._validated_wget",
         return_value=("/usr/bin/wget", "GNU Wget test"),
     )
     def test_warc_only_cdx_records_are_substantive(
@@ -317,7 +347,10 @@ class CaptureExecutionTests(unittest.TestCase):
             )
             return subprocess.CompletedProcess([], 0, "", "")
 
-        with patch("text_preserver.capture.execute._run_wget", side_effect=mock_wget):
+        with patch(
+            "text_preserver.preservation.capture.execute._run_wget",
+            side_effect=mock_wget,
+        ):
             result = execute_capture(
                 load_config(self.config_path),
                 "test-collection",
@@ -336,7 +369,7 @@ class CaptureExecutionTests(unittest.TestCase):
         self.assertTrue(warc["has_response_or_resource"])
 
     @patch(
-        "text_preserver.capture.execute._validated_wget",
+        "text_preserver.preservation.capture.execute._validated_wget",
         return_value=("/usr/bin/wget", "GNU Wget test"),
     )
     def test_warc_without_cdx_uses_bounded_record_header_inspection(
@@ -360,7 +393,10 @@ class CaptureExecutionTests(unittest.TestCase):
             )
             return subprocess.CompletedProcess([], 0, "", "")
 
-        with patch("text_preserver.capture.execute._run_wget", side_effect=mock_wget):
+        with patch(
+            "text_preserver.preservation.capture.execute._run_wget",
+            side_effect=mock_wget,
+        ):
             result = execute_capture(
                 load_config(self.config_path),
                 "test-collection",
@@ -374,11 +410,11 @@ class CaptureExecutionTests(unittest.TestCase):
         self.assertTrue(warc["has_response_or_resource"])
 
     @patch(
-        "text_preserver.capture.execute._run_wget",
+        "text_preserver.preservation.capture.execute._run_wget",
         side_effect=wget_with_partial_mirror,
     )
     @patch(
-        "text_preserver.capture.execute._validated_wget",
+        "text_preserver.preservation.capture.execute._validated_wget",
         return_value=("/usr/bin/wget", "GNU Wget test"),
     )
     def test_nonaccepted_exit_with_payload_is_partial(
@@ -467,11 +503,11 @@ class CaptureExecutionTests(unittest.TestCase):
         )
 
     @patch(
-        "text_preserver.capture.execute._run_wget",
+        "text_preserver.preservation.capture.execute._run_wget",
         side_effect=wget_with_mirror,
     )
     @patch(
-        "text_preserver.capture.execute._validated_wget",
+        "text_preserver.preservation.capture.execute._validated_wget",
         return_value=("/usr/bin/wget", "GNU Wget test"),
     )
     def test_recipe_capture_preserves_complete_recursive_bundle(
@@ -553,9 +589,12 @@ user_agent = "text-preserver-test/1.0"
         self.assertIn("fixtures/example.txt", paths)
         self.assertIn("templates/page.html", paths)
 
-    @patch("text_preserver.capture.execute._run_wget", side_effect=wget_then_interrupt)
     @patch(
-        "text_preserver.capture.execute._validated_wget",
+        "text_preserver.preservation.capture.execute._run_wget",
+        side_effect=wget_then_interrupt,
+    )
+    @patch(
+        "text_preserver.preservation.capture.execute._validated_wget",
         return_value=("/usr/bin/wget", "GNU Wget test"),
     )
     def test_interruption_is_preserved_at_source_and_capture_level(
@@ -597,9 +636,12 @@ user_agent = "text-preserver-test/1.0"
         self.assertFalse((capture_directory.parent.parent / "LATEST").exists())
         self.assertFalse((capture_directory.parent.parent / "LATEST-web").exists())
 
-    @patch("text_preserver.capture.execute._run_wget", side_effect=wget_then_error)
     @patch(
-        "text_preserver.capture.execute._validated_wget",
+        "text_preserver.preservation.capture.execute._run_wget",
+        side_effect=wget_then_error,
+    )
+    @patch(
+        "text_preserver.preservation.capture.execute._validated_wget",
         return_value=("/usr/bin/wget", "GNU Wget test"),
     )
     def test_execution_error_records_retained_payload_metrics(

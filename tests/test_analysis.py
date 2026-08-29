@@ -10,17 +10,15 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from text_preserver.analysis import (
-    AnalysisError,
-    _load_adapter,
-    analyze_preservation,
-    build_static_reader,
-    current_reader_index,
-)
+from text_preserver.access.reader import build_static_reader, current_reader_index
+from text_preserver.adapters import _load_adapter
 from text_preserver.cli import main
 from text_preserver.config import load_config
-from text_preserver.manifest import finalize_capture, verify_capture
-from text_preserver.recipe_bundle import copy_bundle, scan_recipe_directory
+from text_preserver.derived import AnalysisError
+from text_preserver.preservation.fixity import finalize_capture, verify_capture
+from text_preserver.preservation.validation import analyze_preservation
+from text_preserver.preservation.recipe_bundle import copy_bundle, scan_recipe_directory
+from text_preserver.lifecycle import collection_lifecycle_status
 
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
@@ -191,6 +189,7 @@ user_agent = "text-preserver-test/1.0"
                     "capture_id": metadata_capture_id or actual_capture_id,
                     "collection_id": collection_id,
                     "status": capture_status,
+                    "selected_sources": list(source_ids),
                     "sources": records,
                 }
             ),
@@ -464,7 +463,7 @@ def analyze_capture(capture_directory, **kwargs):
         dataset_id = "20260827T120001Z-b1c2d3"
         self.create_capture(capture_id=dataset_id, source_ids=("ota-dataset",))
         collection_root = record_capture.parent.parent
-        (collection_root / "LATEST").write_text(
+        (collection_root / "LATEST-ACQUIRED").write_text(
             f"captures/{self.capture_id}\n", encoding="utf-8"
         )
         (collection_root / "LATEST-ota-record").write_text(
@@ -478,6 +477,17 @@ def analyze_capture(capture_directory, **kwargs):
 
         self.assertEqual(result.contributing_capture_ids, (self.capture_id, dataset_id))
         self.assertEqual(len(result.report["validation_inputs"]["captures"]), 2)
+
+    def test_invalid_canonical_acquired_pointer_does_not_fall_back_to_legacy(self) -> None:
+        self.create_capture()
+        collection_root = self.capture.parent.parent
+        (collection_root / "LATEST").write_text(
+            f"captures/{self.capture_id}\n", encoding="utf-8"
+        )
+        (collection_root / "LATEST-ACQUIRED").write_text("../escape\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(AnalysisError, "unsafe capture pointer content"):
+            analyze_preservation(load_config(self.config_path), "etcsl-fixture")
 
     def test_incomplete_validation_updates_latest_but_not_latest_validated(self) -> None:
         self.create_capture()
@@ -683,6 +693,9 @@ def analyze_capture(capture_directory, **kwargs):
             result.index_path.resolve(),
         )
         self.assertTrue(result.metadata_path.is_file())
+        self.assertEqual(result.metadata["schema_version"], 3)
+        self.assertEqual(len(result.metadata["build_key"]), 64)
+        self.assertEqual(len(result.metadata["output_tree"]["sha256"]), 64)
         self.assertEqual(result.metadata["summary"]["work_count"], 4)
         self.assertEqual(result.metadata["renderer"]["source"], "current_recipe")
         self.assertTrue((result.output_directory / "works/1.8.1.5.1.html").is_file())
@@ -695,11 +708,24 @@ def analyze_capture(capture_directory, **kwargs):
             "etcsl-fixture",
             self.capture,
         )
-        self.assertNotEqual(rebuilt.output_directory.resolve(), first_generation)
+        self.assertEqual(rebuilt.output_directory.resolve(), first_generation)
+        self.assertEqual(rebuilt.metadata["build_key"], result.metadata["build_key"])
+        self.assertEqual(rebuilt.metadata["output_tree"], result.metadata["output_tree"])
+        self.assertFalse(
+            any(
+                path.name.startswith(".build-")
+                for path in rebuilt.output_directory.resolve().parent.iterdir()
+            )
+        )
         self.assertTrue(rebuilt.index_path.is_file())
         self.assertEqual(
             current_reader_index(load_config(self.config_path), "etcsl-fixture").resolve(),
             rebuilt.index_path.resolve(),
+        )
+        latest_reader = self.root / "data/derived/collections/etcsl-fixture/LATEST-READER"
+        self.assertEqual(
+            latest_reader.read_text(encoding="utf-8").strip(),
+            f"captures/{self.capture_id}/reader-generations/{result.metadata['build_key']}",
         )
 
     def test_adapter_relative_imports_are_directory_scoped_and_reloaded(self) -> None:
@@ -741,6 +767,47 @@ def analyze_capture(capture_directory, **kwargs):
             first.metadata["recipe_bundle"]["sha256"],
             second.metadata["recipe_bundle"]["sha256"],
         )
+        self.assertNotEqual(first.metadata["build_key"], second.metadata["build_key"])
+
+    def test_changed_renderer_changes_reader_build_key(self) -> None:
+        self.create_capture()
+        config = load_config(self.config_path)
+        first = build_static_reader(config, "etcsl-fixture", self.capture)
+        reader_path = self.root / "recipe/reader.py"
+        reader_path.write_text(
+            reader_path.read_text(encoding="utf-8") + "\n# changed renderer\n",
+            encoding="utf-8",
+        )
+
+        second = build_static_reader(config, "etcsl-fixture", self.capture)
+
+        self.assertNotEqual(first.metadata["build_key"], second.metadata["build_key"])
+
+    def test_reader_output_mismatch_is_quarantined_without_pointer_change(self) -> None:
+        external = self.root / "external-reader-value.txt"
+        external.write_text("first", encoding="utf-8")
+        (self.root / "recipe/reader.py").write_text(
+            f'''\nfrom pathlib import Path\n\ndef render_static_reader(capture_directory, **kwargs):\n    value = Path({str(external)!r}).read_text(encoding="utf-8")\n    return {{"status": "complete", "files": {{"index.html": value}}, "summary": {{}}, "warnings": []}}\n'''.strip(),
+            encoding="utf-8",
+        )
+        self.create_capture()
+        config = load_config(self.config_path)
+        first = build_static_reader(config, "etcsl-fixture", self.capture)
+        stable = current_reader_index(config, "etcsl-fixture").resolve()
+        latest_reader = self.root / "data/derived/collections/etcsl-fixture/LATEST-READER"
+        pointer_before = latest_reader.read_text(encoding="utf-8")
+        external.write_text("second", encoding="utf-8")
+
+        with self.assertRaisesRegex(AnalysisError, "reader reproducibility failure"):
+            build_static_reader(config, "etcsl-fixture", self.capture)
+
+        self.assertEqual(current_reader_index(config, "etcsl-fixture").resolve(), stable)
+        self.assertEqual(latest_reader.read_text(encoding="utf-8"), pointer_before)
+        quarantine = first.output_directory.parent / "reader-quarantine"
+        entries = list(quarantine.iterdir())
+        self.assertEqual(len(entries), 1)
+        self.assertTrue((entries[0] / "reproducibility.json").is_file())
+        self.assertEqual(entries[0].stat().st_mode & 0o222, 0)
 
     def test_builds_streaming_static_reader(self) -> None:
         self.create_capture()
@@ -835,7 +902,7 @@ def write_static_reader(capture_directory, *, output_directory, expected_work_co
         self.assertEqual(result.capture_directory, self.capture.resolve())
         self.assertTrue(result.current_reader_updated)
 
-    def test_reader_rejects_dangling_configured_source_pointer(self) -> None:
+    def test_reader_prefers_legacy_full_pointer_over_source_pointer(self) -> None:
         self.create_capture()
         collection_root = self.capture.parent.parent
         (collection_root / "LATEST").write_text(
@@ -846,7 +913,28 @@ def write_static_reader(capture_directory, *, output_directory, expected_work_co
             "captures/20260827T000000Z-dead00"
         )
 
-        with self.assertRaisesRegex(AnalysisError, "capture pointer is unavailable"):
+        result = build_static_reader(load_config(self.config_path), "etcsl-fixture")
+        self.assertEqual(result.capture_directory, self.capture.resolve())
+
+    def test_reader_invalid_canonical_pointer_does_not_fall_back(self) -> None:
+        self.create_capture()
+        collection_root = self.capture.parent.parent
+        (collection_root / "LATEST").write_text(
+            f"captures/{self.capture_id}\n", encoding="utf-8"
+        )
+        (collection_root / "LATEST-ACQUIRED").write_text("../escape\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(AnalysisError, "unsafe capture pointer"):
+            build_static_reader(load_config(self.config_path), "etcsl-fixture")
+
+    def test_reader_rejects_source_filtered_canonical_capture(self) -> None:
+        capture = self.create_capture(source_ids=("ota-dataset",))
+        collection_root = capture.parent.parent
+        (collection_root / "LATEST-ACQUIRED").write_text(
+            f"captures/{self.capture_id}\n", encoding="utf-8"
+        )
+
+        with self.assertRaisesRegex(AnalysisError, "source-filtered"):
             build_static_reader(load_config(self.config_path), "etcsl-fixture")
 
     def test_reader_rejects_unsafe_adapter_output_path(self) -> None:
@@ -924,6 +1012,58 @@ def render_static_reader(capture_directory, **kwargs):
             current_reader_index(config, "etcsl-fixture").resolve(),
             previous_index,
         )
+        latest_reader = self.root / "data/derived/collections/etcsl-fixture/LATEST-READER"
+        self.assertIn(complete.metadata["build_key"], latest_reader.read_text(encoding="utf-8"))
+        self.assertNotIn(incomplete.metadata["build_key"], latest_reader.read_text(encoding="utf-8"))
+
+    def test_lifecycle_reports_four_independent_dimensions(self) -> None:
+        self.create_capture()
+        collection_root = self.capture.parent.parent
+        (collection_root / "LATEST-ACQUIRED").write_text(
+            f"captures/{self.capture_id}\n", encoding="utf-8"
+        )
+        config = load_config(self.config_path)
+        analyze_preservation(config, "etcsl-fixture", self.capture)
+        build_static_reader(config, "etcsl-fixture", self.capture)
+
+        value = collection_lifecycle_status(config, "etcsl-fixture")
+
+        self.assertEqual(value["schema_version"], 1)
+        self.assertEqual(value["acquisition"]["state"], "acquired")
+        self.assertEqual(value["fixity"]["state"], "valid")
+        self.assertEqual(value["validation"]["state"], "complete")
+        self.assertIn(value["access"]["state"], {"complete", "complete_with_warnings"})
+        self.assertNotIn("status", value)
+
+    def test_lifecycle_keeps_acquisition_success_when_fixity_fails(self) -> None:
+        self.create_capture()
+        collection_root = self.capture.parent.parent
+        (collection_root / "LATEST-ACQUIRED").write_text(
+            f"captures/{self.capture_id}\n", encoding="utf-8"
+        )
+        (self.capture / "sources/ota-record/mirror/tampered.txt").write_text(
+            "tampered", encoding="utf-8"
+        )
+
+        value = collection_lifecycle_status(load_config(self.config_path), "etcsl-fixture")
+
+        self.assertEqual(value["acquisition"]["state"], "acquired")
+        self.assertEqual(value["fixity"]["state"], "invalid")
+        self.assertEqual(value["validation"]["state"], "not_run")
+        self.assertEqual(value["access"]["state"], "not_run")
+
+    def test_lifecycle_rejects_mismatched_validation_identity(self) -> None:
+        self.create_capture()
+        config = load_config(self.config_path)
+        result = analyze_preservation(config, "etcsl-fixture", self.capture)
+        report_path = result.report_path
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        report["collection_id"] = "other-collection"
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+
+        value = collection_lifecycle_status(config, "etcsl-fixture")
+
+        self.assertEqual(value["validation"]["state"], "invalid")
 
     def test_reader_rejects_current_pointer_outside_collection_captures(self) -> None:
         self.create_capture()
@@ -939,6 +1079,81 @@ def render_static_reader(capture_directory, **kwargs):
                 "etcsl-fixture",
                 self.capture,
             )
+
+    def test_malformed_latest_reader_does_not_fall_back_to_symlink(self) -> None:
+        self.create_capture()
+        config = load_config(self.config_path)
+        build_static_reader(config, "etcsl-fixture", self.capture)
+        latest_reader = self.root / "data/derived/collections/etcsl-fixture/LATEST-READER"
+        latest_reader.write_text("../escape\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(AnalysisError, "unsafe current reader pointer"):
+            current_reader_index(config, "etcsl-fixture")
+
+    def test_current_reader_rejects_incomplete_canonical_metadata(self) -> None:
+        self.create_capture()
+        config = load_config(self.config_path)
+        result = build_static_reader(config, "etcsl-fixture", self.capture)
+        metadata_path = result.metadata_path.resolve()
+        metadata_path.chmod(0o644)
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["status"] = "incomplete"
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+        with self.assertRaisesRegex(AnalysisError, "metadata does not match"):
+            current_reader_index(config, "etcsl-fixture")
+
+    def test_current_reader_rejects_changed_output_tree(self) -> None:
+        self.create_capture()
+        config = load_config(self.config_path)
+        result = build_static_reader(config, "etcsl-fixture", self.capture)
+        index = result.index_path.resolve()
+        index.chmod(0o644)
+        index.write_text("changed", encoding="utf-8")
+
+        with self.assertRaisesRegex(AnalysisError, "output tree does not match"):
+            current_reader_index(config, "etcsl-fixture")
+
+    def test_reader_publish_failure_after_rename_does_not_leave_generation(self) -> None:
+        self.create_capture()
+        config = load_config(self.config_path)
+
+        with patch(
+            "text_preserver.access.reader._make_tree_read_only",
+            side_effect=OSError("mock chmod failure"),
+        ):
+            with self.assertRaisesRegex(AnalysisError, "cannot publish reader generation"):
+                build_static_reader(config, "etcsl-fixture", self.capture)
+
+        generations = (
+            self.root
+            / f"data/derived/collections/etcsl-fixture/captures/{self.capture_id}/reader-generations"
+        )
+        self.assertEqual(list(generations.iterdir()), [])
+
+    def test_current_pointer_write_failure_restores_stable_reader(self) -> None:
+        self.create_capture()
+        config = load_config(self.config_path)
+        first = build_static_reader(config, "etcsl-fixture", self.capture)
+        stable_before = current_reader_index(config, "etcsl-fixture").resolve()
+        pointer = self.root / "data/derived/collections/etcsl-fixture/LATEST-READER"
+        pointer_before = pointer.read_text(encoding="utf-8")
+        reader_path = self.root / "recipe/reader.py"
+        reader_path.write_text(
+            reader_path.read_text(encoding="utf-8") + "\n# next generation\n",
+            encoding="utf-8",
+        )
+
+        with patch(
+            "text_preserver.access.reader._atomic_write_text",
+            side_effect=OSError("mock pointer failure"),
+        ):
+            with self.assertRaisesRegex(AnalysisError, "cannot write static reader"):
+                build_static_reader(config, "etcsl-fixture", self.capture)
+
+        self.assertEqual(current_reader_index(config, "etcsl-fixture").resolve(), stable_before)
+        self.assertEqual(pointer.read_text(encoding="utf-8"), pointer_before)
+        self.assertTrue(first.index_path.is_file())
 
     def test_reader_cli_emits_json(self) -> None:
         self.create_capture()
@@ -1029,6 +1244,27 @@ def render_static_reader(capture_directory, **kwargs):
 
         self.assertEqual(exit_code, 1)
         self.assertEqual(json.loads(output.getvalue())["report"]["status"], "incomplete")
+
+    def test_validate_command_and_deprecated_alias_keep_json_stdout_clean(self) -> None:
+        self.create_capture()
+        canonical_output = StringIO()
+        canonical_errors = StringIO()
+        with redirect_stdout(canonical_output), redirect_stderr(canonical_errors):
+            canonical_code = main(
+                ["validate", "etcsl-fixture", str(self.capture), "-c", str(self.config_path), "--json"]
+            )
+        alias_output = StringIO()
+        alias_errors = StringIO()
+        with redirect_stdout(alias_output), redirect_stderr(alias_errors):
+            alias_code = main(
+                ["analyze", "preservation", "etcsl-fixture", str(self.capture), "-c", str(self.config_path), "--json"]
+            )
+
+        self.assertEqual((canonical_code, alias_code), (0, 0))
+        self.assertEqual(canonical_errors.getvalue(), "")
+        self.assertEqual(json.loads(canonical_output.getvalue())["report"]["status"], "complete")
+        self.assertEqual(json.loads(alias_output.getvalue())["report"]["status"], "complete")
+        self.assertEqual(alias_errors.getvalue().count("deprecated"), 1)
 
     def test_cli_accepts_multiple_capture_paths(self) -> None:
         record_capture = self.create_capture(source_ids=("ota-record",))

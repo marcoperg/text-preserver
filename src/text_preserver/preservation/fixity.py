@@ -1,4 +1,4 @@
-"""Create and verify immutable capture fixity manifests."""
+"""Create and verify immutable preservation capture manifests."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 import stat
 import tempfile
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 
 MANIFEST_NAME = "manifest-sha256.json"
@@ -41,6 +41,40 @@ class VerificationResult:
             "checked_objects": self.checked_objects,
             "errors": list(self.errors),
         }
+
+
+def is_complete_full_capture(
+    metadata: Mapping[str, Any],
+    configured_source_ids: Iterable[str],
+) -> bool:
+    """Return whether capture metadata represents a complete unfiltered capture."""
+    configured = tuple(configured_source_ids)
+    selected = metadata.get("selected_sources")
+    sources = metadata.get("sources")
+    if (
+        metadata.get("status") != "complete"
+        or not isinstance(selected, list)
+        or not all(isinstance(value, str) for value in selected)
+        or len(selected) != len(set(selected))
+        or set(selected) != set(configured)
+        or len(selected) != len(configured)
+        or not isinstance(sources, list)
+    ):
+        return False
+    source_ids = [
+        source.get("source_id") if isinstance(source, dict) else None
+        for source in sources
+    ]
+    return (
+        len(source_ids) == len(configured)
+        and all(isinstance(value, str) for value in source_ids)
+        and len(source_ids) == len(set(source_ids))
+        and set(source_ids) == set(configured)
+        and all(
+            isinstance(source, dict) and source.get("status") == "complete"
+            for source in sources
+        )
+    )
 
 
 def finalize_capture(capture_directory: Path) -> dict[str, Any]:
@@ -134,19 +168,30 @@ def _resolve_capture_directory(path: Path) -> Path:
         raise ManifestError(f"manifest must not be a symlink: {manifest}")
     if manifest.is_file():
         return candidate
-    latest = candidate / "LATEST"
+    canonical = candidate / "LATEST-ACQUIRED"
+    legacy = candidate / "LATEST"
+    latest = canonical if canonical.is_symlink() or canonical.exists() else legacy
     if latest.is_symlink():
-        raise ManifestError(f"LATEST must not be a symlink: {latest}")
+        raise ManifestError(f"{latest.name} must not be a symlink: {latest}")
     if latest.is_file():
         try:
             value = _read_regular(latest).decode("utf-8").strip()
         except (OSError, UnicodeError) as exc:
-            raise ManifestError(f"cannot read LATEST pointer: {exc}") from exc
-        if not value or Path(value).is_absolute() or ".." in Path(value).parts:
-            raise ManifestError(f"unsafe LATEST pointer: {latest}")
-        target = (candidate / value).resolve()
+            raise ManifestError(f"cannot read {latest.name} pointer: {exc}") from exc
+        relative = Path(value)
+        if (
+            relative.is_absolute()
+            or len(relative.parts) != 2
+            or relative.parts[0] != "captures"
+            or re.fullmatch(r"\d{8}T\d{6}Z-[a-z0-9]{6,16}", relative.parts[1]) is None
+        ):
+            raise ManifestError(f"unsafe {latest.name} pointer: {latest}")
+        unresolved_target = candidate / relative
+        if unresolved_target.is_symlink():
+            raise ManifestError(f"{latest.name} targets a symlink: {latest}")
+        target = unresolved_target.resolve()
         if not target.is_relative_to(candidate):
-            raise ManifestError(f"LATEST escapes collection directory: {latest}")
+            raise ManifestError(f"{latest.name} escapes collection directory: {latest}")
         if (target / MANIFEST_NAME).is_file():
             return target
     raise ManifestError(f"fixity manifest not found under: {candidate}")

@@ -592,7 +592,9 @@ The implemented first access derivative is built with:
 text-preserver derive reader COLLECTION_ID /path/to/capture
 ```
 
-The generic builder verifies capture fixity before and after rendering, executes the current recipe code, constrains output paths and size, builds an immutable generation, atomically switches the capture-scoped `reader` pointer, and records capture, configuration, recipe bundle, and renderer hashes. Current external code is identified by scanning its complete recipe directory; current inline code is identified from declared analysis assets only. Small readers may return an in-memory text mapping. Large readers stream UTF-8 files into a quarantined generation that is checked for symlinks, special files, reserved paths, per-file size, total size, and file count before publication. A usable build also atomically switches `derived/collections/ID/reader` directly to that immutable generation; incomplete builds cannot replace it. `text-preserver open reader COLLECTION_ID` opens this stable access path. The ETCSL renderer produces side-by-side transliteration and translation pages. The GRETIL renderer processes the aggregate ZIP one TEI record at a time and produces complete full-text pages for the 801 reviewed register identifiers with item rights and package provenance.
+The generic builder verifies capture fixity before rendering and requires the manifest digest to remain identical afterward. Both adapter contracts materialize UTF-8 output in staging with bounded paths, types, links, file sizes, total size, and file count. Reader metadata schema 3 derives a full SHA-256 build key from only semantic inputs: schema, collection, initial manifest digest, sorted selected source IDs, recipe API and bundle digest, renderer byte digest and selected entry point, and expected work count. Creation time, capture ID, absolute paths, raw configuration, and operator/storage settings are excluded. A canonical digest inventories sorted relative POSIX directory/file entries (with file sizes and SHA-256 values), excluding builder-owned `metadata.json`.
+
+The adapter executes on every invocation. A matching existing full-key generation is verified and reused; a same-key output/status/summary/warning mismatch or corrupt generation quarantines the candidate read-only with `reproducibility.json` and changes no pointers. New generations are immutable. Reader generation and pointer publication is serialized per collection, and a failed canonical pointer write restores the prior stable symlink. Every successful publication switches the capture-scoped `reader` link. A usable build also writes regular `LATEST-READER` metadata and switches the stable collection `reader` symlink; incomplete builds switch neither collection indicator. Current-reader lookup requires the canonical metadata identity, successful status, build inputs, and output-tree digest to agree with the text pointer and symlink, and falls back to a safe legacy symlink only when `LATEST-READER` is absent. `text-preserver open reader COLLECTION_ID` opens this stable path.
 
 ---
 
@@ -859,7 +861,8 @@ text-preserver compare etcsl CAPTURE_A CAPTURE_B
 ```bash
 text-preserver catalog build etcsl
 text-preserver normalize etcsl
-text-preserver analyze preservation etcsl
+text-preserver validate etcsl
+text-preserver analyze preservation etcsl  # deprecated version-0.1 alias
 text-preserver analyze logic etcsl
 text-preserver search "kingship"
 ```
@@ -1038,7 +1041,8 @@ data/
 │   └── collections/
 │       └── etcsl/
 │           ├── collection.json
-│           ├── LATEST
+│           ├── LATEST-ACQUIRED
+│           ├── LATEST                       # legacy, read only
 │           ├── LATEST-web
 │           ├── LATEST-canonical-dataset
 │           └── captures/
@@ -1073,6 +1077,7 @@ data/
 │   └── collections/
 │       └── etcsl/
 │           ├── reader -> captures/20260827T120000Z-a1b2c3/reader-generations/...
+│           ├── LATEST-READER
 │           ├── LATEST-VALIDATED
 │           ├── catalogue.sqlite
 │           ├── normalized/
@@ -1086,7 +1091,9 @@ data/
 │           └── captures/
 │               └── 20260827T120000Z-a1b2c3/
 │                   ├── reader -> reader-generations/...
-│                   └── reader-generations/
+│                   ├── reader-generations/
+│                   │   └── BUILD_KEY/
+│                   └── reader-quarantine/
 │
 └── workspace/
     ├── annotations/
@@ -1101,9 +1108,11 @@ Capture IDs should use UTC plus a collision-resistant suffix:
 20260827T120000Z-a1b2c3
 ```
 
-The portable archive text pointer `LATEST` identifies the newest complete, verified, unfiltered collection capture. `LATEST-SOURCE_ID` identifies the newest fixity-verified capture in which that source completed successfully, including success with warnings. Pointer updates happen only after immediate whole-capture fixity verification. These pointers are conveniences, not the archive.
+The portable archive text pointer `LATEST-ACQUIRED` identifies the newest complete, verified, unfiltered collection capture. The compatibility result field `latest_updated` means this canonical pointer advanced. Existing legacy `LATEST` remains readable only when canonical is absent and is never rewritten or deleted. Canonical presence suppresses fallback even when malformed. `LATEST-SOURCE_ID` identifies the newest fixity-verified capture in which that configured source completed successfully, including success with warnings. Pointer updates happen only after immediate whole-capture fixity verification. These pointers are conveniences, not the archive.
 
 Derived validation pointers have separate semantics. `validations/LATEST` names the latest invoked immutable validation whether usable or incomplete. Collection-level `LATEST-VALIDATED` names the latest invoked validation whose status is `complete` or `complete_with_warnings`; an incomplete result never displaces it. Both are portable text pointers, are updated atomically, and must resolve below the collection's derived validation directory.
+
+The application read model reports acquisition, fixity, validation, and access as four independent dimensions through `text-preserver collections status ID [--json]`; it writes nothing and executes no adapters. Normal incomplete or invalid dimensions remain a successful inspection. Unsafe top-level storage inspection and configuration/collection errors are command errors. No aggregate lifecycle status is defined.
 
 ---
 
@@ -1372,7 +1381,7 @@ The system should answer:
 - Did the crawler stop because of quota, errors, or scope?
 - Did a repository deposit change without a new version identifier?
 
-Analysis may combine independently finalized source captures. With no explicit input, the candidate set is collection `LATEST` plus every existing `LATEST-SOURCE_ID`; explicit capture paths replace that set. Every candidate is fixity-verified, source providers are selected deterministically by successful status and then newer capture ID, and every contributing capture is verified again after adapter execution. The temporary aggregate contains a synthetic `capture.json` and source links whose targets remain under those verified captures.
+Validation may combine independently finalized source captures. With no explicit input, the candidate set is `LATEST-ACQUIRED`, or legacy `LATEST` only when canonical is absent, plus existing pointers for source IDs declared by the resolved collection. `LATEST-ACQUIRED` and unrelated `LATEST-*` entries are never treated as sources. Explicit capture paths replace that set. Every candidate is fixity-verified, source providers are selected deterministically by successful status and then newer capture ID, and every contributing capture is verified again after adapter execution. The temporary aggregate contains a synthetic `capture.json` and source links whose targets remain under those verified captures.
 
 Validation reports are immutable, derived objects under `derived/collections/ID/validations/VALIDATION_ID/report.json`. `VALIDATION_ID` is the SHA-256 of canonical JSON covering the report schema, contributing capture IDs and manifest hashes, source-to-capture map, adapter digest and source, effective expectations, required representations and sources, current configuration hash, and the used recipe bundle digest/API. A preserved adapter uses and verifies the captured manifest; current external code scans the current recipe directory; current inline code scans only declared assets. Malformed or mismatched captured manifests are rejected. Reports record those inputs and a creation timestamp. Repeating identical inputs reuses the existing report rather than overwriting historical assessment output.
 
@@ -1831,6 +1840,9 @@ The project should remain useful with only Python and GNU Wget.
 
 ## Proposed repository structure
 
+The Phase 1 target keeps application wiring at the package root and makes workflow
+ownership explicit:
+
 ```text
 text-preserver/
 ├── README.md
@@ -1840,141 +1852,65 @@ text-preserver/
 │   └── text_preserver/
 │       ├── cli.py
 │       ├── config.py
-│       ├── models.py
-│       ├── capture/
-│       │   ├── coordinator.py
-│       │   ├── manifests.py
-│       │   ├── verify.py
-│       │   └── engines/
-│       │       ├── base.py
-│       │       ├── wget.py
-│       │       └── browsertrix.py
-│       ├── catalog/
-│       │   ├── database.py
-│       │   ├── inventory.py
-│       │   └── identifiers.py
-│       ├── normalize/
-│       │   ├── base.py
-│       │   ├── html.py
-│       │   └── tei.py
-│       ├── analysis/
-│       │   ├── preservation.py
-│       │   ├── changes.py
-│       │   ├── facts.py
-│       │   └── ciao.py
-│       ├── annotations/
-│       │   ├── models.py
-│       │   ├── selectors.py
-│       │   └── org.py
-│       └── web/
-│           ├── app.py
-│           ├── routes.py
-│           └── templates/
+│       ├── adapters.py
+│       ├── derived.py
+│       ├── recipes.py
+│       ├── preservation/
+│       │   ├── capture/
+│       │   │   ├── execute.py
+│       │   │   ├── plan.py
+│       │   │   └── engines/
+│       │   │       └── wget.py
+│       │   ├── fixity.py
+│       │   ├── recipe_bundle.py
+│       │   └── validation.py
+│       └── access/
+│           ├── reader.py
+│           ├── model.py
+│           └── theme.py
 ├── collections/
 │   ├── etcsl/
-│   └── gretil/
+│   ├── gretil/
+│   └── sacred-texts/
 ├── schemas/
-│   ├── collection.schema.json
-│   ├── normalized-text.schema.json
-│   ├── annotation.schema.json
-│   └── claim.schema.json
-├── emacs/
-│   └── text-preserver-org.el
+│   ├── capture-manifest.schema.json
+│   ├── collection-recipe.schema.json
+│   └── config.schema.json
 ├── tests/
-│   ├── unit/
-│   ├── integration/
-│   └── fixtures/
+│   ├── installed_smoke.py
+│   ├── test_architecture.py
+│   └── test_*.py
 ├── docs/
-│   ├── architecture.md
-│   ├── preservation-model.md
-│   ├── identifiers.md
-│   └── knowledge-model.md
-├── collections.example.toml
-└── .gitignore
+│   ├── design.md
+│   └── roadmap.md
+└── collections.example.toml
 ```
 
-Do not create every module before it is needed. This structure defines boundaries, not an instruction to build empty abstractions.
+`access/model.py` and `access/theme.py` are Phase 4 targets, not empty modules to
+create during the boundary move. Likewise, no `research/` package should exist until
+Phase 7 has a concrete feature. The built-in recipe location changes in Phase 3 when
+the project adopts `importlib.resources`.
 
 ---
 
 ## Development plan
 
-### Phase 0 — specification
+The maintained, status-tracked implementation sequence is in
+[`docs/roadmap.md`](roadmap.md). It defines concrete deliverables, dependencies,
+exit criteria, critique traceability, and the version 0.1 release gate.
 
-- finalize terminology;
-- add MIT `LICENSE`;
-- add `.gitignore`;
-- define capture and manifest schemas;
-- define the collection recipe format;
-- establish immutable/derived/workspace boundaries.
+The governing order is:
 
-### Phase 1 — preservation core
+```text
+preservation contracts
+    -> deterministic access
+        -> optional research clients
+```
 
-- Python package and CLI;
-- configuration loading and validation;
-- Wget engine;
-- recursive and direct-file sources;
-- WARC, CDX, mirror, logs, and manifests;
-- capture statuses;
-- collection locks;
-- `doctor`, `capture`, and `verify`.
-
-### Phase 2 — ETCSL vertical slice
-
-- ETCSL recipe;
-- full catalogue seeds;
-- Oxford deposit;
-- inventory extraction;
-- composition/translation/transliteration mapping;
-- first completeness report;
-- first Ciao rules;
-- SQLite catalogue;
-- minimal local reader;
-- stable passage links.
-
-### Phase 3 — GRETIL generalization
-
-- one selected GRETIL subcollection;
-- TextGrid and legacy source mapping;
-- TEI normalization;
-- legacy encoding preservation;
-- migration-lineage checks;
-- representation and rights modelling;
-- generated HTML/source XML mapping.
-
-### Phase 4 — access and Org integration
-
-- full-text search;
-- side-by-side representations;
-- source and WARC access;
-- custom Org links;
-- `org-protocol` capture;
-- W3C-compatible annotations.
-
-### Phase 5 — advanced validation and reasoning
-
-- collection-specific Ciao packages;
-- explainable completeness reports;
-- claim graph;
-- query interface;
-- conflict and dependency detection;
-- change impact on cited passages.
-
-### Phase 6 — dynamic web and portable replay
-
-- Browsertrix adapter;
-- browser behaviors;
-- replay quality assurance;
-- WACZ packaging;
-- ReplayWeb.page integration.
-
-### Phase 7 — optional semantic analysis
-
-- pluggable embeddings;
-- semantic search;
-- LLM-assisted proposals;
-- provenance and review workflow;
-- no dependency of preservation on model availability.
+Browser capture, replay exports, Org integration, Ciao reasoning, embeddings, and
+semantic analysis remain valid long-term directions, but they do not take priority
+over preservation state, recipe contracts, deterministic derivations, package
+interoperability, or the preservation/access/research dependency boundaries.
 
 ---
 
@@ -2005,7 +1941,7 @@ They should cover:
 - multi-source collection status;
 - partial and interrupted captures;
 - preservation of logs;
-- full versus source-filtered `LATEST`;
+- full `LATEST-ACQUIRED` versus source-filtered `LATEST-SOURCE_ID`;
 - fixity verification;
 - detection of modified and unexpected files;
 - collection locks;

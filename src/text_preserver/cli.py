@@ -10,13 +10,8 @@ from typing import Mapping, Sequence
 import webbrowser
 
 from text_preserver import __version__
-from text_preserver.analysis import (
-    AnalysisError,
-    analyze_preservation,
-    build_static_reader,
-    current_reader_index,
-)
-from text_preserver.capture import (
+from text_preserver.access.reader import build_static_reader, current_reader_index
+from text_preserver.preservation.capture import (
     CaptureExecutionError,
     CapturePlanError,
     execute_capture,
@@ -24,7 +19,10 @@ from text_preserver.capture import (
 )
 from text_preserver.config import CollectionConfig, ConfigError, load_config
 from text_preserver.doctor import inspect_environment
-from text_preserver.manifest import verify_capture
+from text_preserver.derived import AnalysisError
+from text_preserver.preservation.fixity import verify_capture
+from text_preserver.preservation.validation import analyze_preservation
+from text_preserver.lifecycle import collection_lifecycle_status
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -60,6 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
     collections_show.add_argument("collection_id", help="configured collection ID")
     _add_config_argument(collections_show)
     collections_show.add_argument("--json", action="store_true", help="emit machine-readable results")
+    collections_status = collection_commands.add_parser(
+        "status", help="show independent collection lifecycle states"
+    )
+    collections_status.add_argument("collection_id", help="configured collection ID")
+    _add_config_argument(collections_status)
+    collections_status.add_argument("--json", action="store_true", help="emit machine-readable results")
 
     capture = subparsers.add_parser(
         "capture",
@@ -96,7 +100,11 @@ def build_parser() -> argparse.ArgumentParser:
         "verify",
         help="verify a finalized capture against its SHA-256 manifest",
     )
-    verify.add_argument("path", type=Path, help="capture directory or collection with LATEST")
+    verify.add_argument(
+        "path",
+        type=Path,
+        help="capture directory or collection with LATEST-ACQUIRED (or legacy LATEST)",
+    )
     verify.add_argument("--json", action="store_true", help="emit machine-readable results")
 
     analyze = subparsers.add_parser("analyze", help="analyze preserved collection content")
@@ -105,18 +113,12 @@ def build_parser() -> argparse.ArgumentParser:
         "preservation",
         help="run collection-specific completeness analysis",
     )
-    preservation.add_argument("collection_id", help="configured collection ID")
-    preservation.add_argument(
-        "capture_paths",
-        nargs="*",
-        type=Path,
-        help=(
-            "capture directories; defaults to collection LATEST and all "
-            "LATEST-SOURCE_ID pointers"
-        ),
+    _add_validation_arguments(preservation)
+
+    validate = subparsers.add_parser(
+        "validate", help="run collection-specific preservation validation"
     )
-    _add_config_argument(preservation)
-    preservation.add_argument("--json", action="store_true", help="emit machine-readable report")
+    _add_validation_arguments(validate)
 
     derive = subparsers.add_parser("derive", help="build access copies from preserved content")
     derive_commands = derive.add_subparsers(dest="derive_command", required=True)
@@ -126,7 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
         "capture_path",
         nargs="?",
         type=Path,
-        help="capture directory; defaults to the collection LATEST pointer",
+        help="capture directory; defaults to LATEST-ACQUIRED (or legacy LATEST)",
     )
     _add_config_argument(reader)
     reader.add_argument("--json", action="store_true", help="emit machine-readable result")
@@ -170,6 +172,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                             f"{value['id']}\t{state}\t{value['source_count']} source(s)\t{value['title']}"
                         )
                 return 0
+            if args.collections_command == "status":
+                value = collection_lifecycle_status(config, args.collection_id)
+                if args.json:
+                    print(json.dumps(value, indent=2))
+                else:
+                    for dimension in ("acquisition", "fixity", "validation", "access"):
+                        print(f"{dimension}: {value[dimension]['state']}")
+                return 0
             collection = next(
                 (item for item in config.collections if item.id == args.collection_id),
                 None,
@@ -191,7 +201,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(f"  {source['id']}: {source['kind']}, {requirement}")
                 print(f"Analysis: {json.dumps(value['analysis'], sort_keys=True)}")
             return 0
-        except ConfigError as exc:
+        except (ConfigError, AnalysisError) as exc:
             print(f"collections error: {exc}", file=sys.stderr)
             return 2
     if args.command == "capture":
@@ -246,28 +256,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             for error in result.errors:
                 print(f"  {error}")
         return 0 if result.ok else 1
-    if args.command == "analyze" and args.analyze_command == "preservation":
-        try:
-            config = load_config(args.config)
-            result = analyze_preservation(
-                config,
-                args.collection_id,
-                args.capture_paths or None,
-            )
-        except (ConfigError, AnalysisError) as exc:
-            print(f"analysis error: {exc}", file=sys.stderr)
-            return 2
-        if args.json:
-            print(json.dumps(result.to_dict(), indent=2))
-        else:
-            print(f"Capture: {result.capture_directory}")
-            print(f"Report: {result.report_path}")
-            print(f"Status: {result.status}")
-            for error in result.report.get("errors", []):
-                print(f"  {error}")
-            for warning in result.report.get("warnings", []):
-                print(f"  warning: {warning}")
-        return 0 if result.status in {"complete", "complete_with_warnings"} else 1
+    if args.command == "validate" or (
+        args.command == "analyze" and args.analyze_command == "preservation"
+    ):
+        return _run_validation(args, deprecated=args.command == "analyze")
     if args.command == "derive" and args.derive_command == "reader":
         try:
             config = load_config(args.config)
@@ -318,6 +310,47 @@ def _add_config_argument(parser: argparse.ArgumentParser) -> None:
         default=Path("collections.toml"),
         help="TOML configuration file (default: collections.toml)",
     )
+
+
+def _add_validation_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("collection_id", help="configured collection ID")
+    parser.add_argument(
+        "capture_paths",
+        nargs="*",
+        type=Path,
+        help=(
+            "capture directories; defaults to LATEST-ACQUIRED (or legacy LATEST) "
+            "and configured source pointers"
+        ),
+    )
+    _add_config_argument(parser)
+    parser.add_argument("--json", action="store_true", help="emit machine-readable report")
+
+
+def _run_validation(args: argparse.Namespace, *, deprecated: bool) -> int:
+    if deprecated:
+        print("warning: 'analyze preservation' is deprecated; use 'validate'", file=sys.stderr)
+    try:
+        config = load_config(args.config)
+        result = analyze_preservation(
+            config,
+            args.collection_id,
+            args.capture_paths or None,
+        )
+    except (ConfigError, AnalysisError) as exc:
+        print(f"validation error: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2))
+    else:
+        print(f"Capture: {result.capture_directory}")
+        print(f"Report: {result.report_path}")
+        print(f"Status: {result.status}")
+        for error in result.report.get("errors", []):
+            print(f"  {error}")
+        for warning in result.report.get("warnings", []):
+            print(f"  warning: {warning}")
+    return 0 if result.status in {"complete", "complete_with_warnings"} else 1
 
 
 def _collection_summary(collection: CollectionConfig) -> dict[str, object]:

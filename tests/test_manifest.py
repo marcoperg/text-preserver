@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 from text_preserver.cli import main
-from text_preserver.manifest import ManifestError, finalize_capture, verify_capture
+from text_preserver.preservation.fixity import ManifestError, finalize_capture, verify_capture
 
 
 class ManifestTests(unittest.TestCase):
@@ -109,6 +109,35 @@ class ManifestTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertTrue(json.loads(output.getvalue())["ok"])
+
+    def test_collection_verification_prefers_canonical_and_falls_back_to_legacy(self) -> None:
+        collection = Path(self.temporary_directory.name) / "collection"
+        capture_id = "20260829T120000Z-a1b2c3"
+        capture = collection / "captures" / capture_id
+        (capture / "metadata").mkdir(parents=True)
+        (capture / "capture.json").write_text("{}\n", encoding="utf-8")
+        finalize_capture(capture)
+        (collection / "LATEST").write_text(f"captures/{capture_id}\n", encoding="utf-8")
+
+        self.assertTrue(verify_capture(collection).ok)
+        (collection / "LATEST-ACQUIRED").write_text("../escape\n", encoding="utf-8")
+
+        result = verify_capture(collection)
+        self.assertFalse(result.ok)
+        self.assertIn("unsafe LATEST-ACQUIRED", result.errors[0])
+
+    def test_collection_verification_accepts_long_capture_suffix(self) -> None:
+        collection = Path(self.temporary_directory.name) / "collection"
+        capture_id = "20260829T120000Z-a1b2c3d4e5f6"
+        capture = collection / "captures" / capture_id
+        (capture / "metadata").mkdir(parents=True)
+        (capture / "capture.json").write_text("{}\n", encoding="utf-8")
+        finalize_capture(capture)
+        (collection / "LATEST-ACQUIRED").write_text(
+            f"captures/{capture_id}\n", encoding="utf-8"
+        )
+
+        self.assertTrue(verify_capture(collection).ok)
 
 
 if __name__ == "__main__":

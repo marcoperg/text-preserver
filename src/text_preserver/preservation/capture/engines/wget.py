@@ -1,4 +1,4 @@
-"""Build deterministic GNU Wget capture commands."""
+"""Build deterministic GNU Wget preservation capture commands."""
 
 from __future__ import annotations
 

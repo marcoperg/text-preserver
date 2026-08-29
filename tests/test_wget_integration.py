@@ -8,9 +8,9 @@ import tempfile
 import threading
 import unittest
 
-from text_preserver.capture import execute_capture, plan_capture
+from text_preserver.preservation.capture import execute_capture, plan_capture
 from text_preserver.config import load_config
-from text_preserver.manifest import verify_capture
+from text_preserver.preservation.fixity import verify_capture
 
 
 def wget_has_warc_support() -> bool:
@@ -185,7 +185,7 @@ allowed_hosts = ["127.0.0.1"]
         self.assertTrue((capture.capture_directory / "SHA256SUMS").is_file())
         verification = verify_capture(capture.capture_directory)
         self.assertTrue(verification.ok, verification.errors)
-        latest = capture.capture_directory.parent.parent / "LATEST"
+        latest = capture.capture_directory.parent.parent / "LATEST-ACQUIRED"
         self.assertEqual(latest.read_text(encoding="utf-8").strip(), "captures/20260827T120000Z-a1b2c3")
         source_latest = capture.capture_directory.parent.parent / "LATEST-web"
         self.assertEqual(
@@ -248,6 +248,9 @@ allowed_hosts = ["127.0.0.1"]
         self.assertEqual(capture.status, "complete", self.capture_diagnostics(capture))
         self.assertFalse(capture.latest_updated)
         self.assertFalse((capture.capture_directory.parent.parent / "LATEST").exists())
+        self.assertFalse(
+            (capture.capture_directory.parent.parent / "LATEST-ACQUIRED").exists()
+        )
         source_latest = capture.capture_directory.parent.parent / "LATEST-web"
         self.assertEqual(
             source_latest.read_text(encoding="utf-8").strip(),

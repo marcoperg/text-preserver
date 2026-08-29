@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from text_preserver.capture import CaptureResult
+from text_preserver.preservation.capture import CaptureResult
 from text_preserver.cli import main
 
 from tests.test_config import VALID_CONFIG

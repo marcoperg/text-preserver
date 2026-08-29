@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from text_preserver.capture import CapturePlanError, plan_capture
+from text_preserver.preservation.capture import CapturePlanError, plan_capture
 from text_preserver.config import ConfigError, load_config
 
 from tests.test_config import VALID_CONFIG

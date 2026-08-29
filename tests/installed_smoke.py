@@ -9,10 +9,11 @@ import tempfile
 import threading
 
 import text_preserver
-from text_preserver.analysis import analyze_preservation, build_static_reader
-from text_preserver.capture import execute_capture
+from text_preserver.access.reader import build_static_reader
+from text_preserver.preservation.capture import execute_capture
 from text_preserver.config import load_config
-from text_preserver.manifest import verify_capture
+from text_preserver.preservation.fixity import verify_capture
+from text_preserver.preservation.validation import analyze_preservation
 
 
 PUBLIC_RECIPE_FILES = {
@@ -200,6 +201,11 @@ user_agent = "text-preserver-installed-smoke/1.0"
         )
         assert capture.status == "complete"
         assert verify_capture(capture.capture_directory).ok
+        collection_root = capture.capture_directory.parent.parent
+        assert (collection_root / "LATEST-ACQUIRED").read_text(encoding="utf-8").strip() == (
+            "captures/20260829T120000Z-a1b2c3"
+        )
+        assert not (collection_root / "LATEST").exists()
         bundle = capture.capture_directory / "metadata/recipe-bundle"
         assert (bundle / "adapter.py").is_file()
         assert (bundle / "template.txt").is_file()
@@ -216,7 +222,17 @@ user_agent = "text-preserver-installed-smoke/1.0"
         assert validation.report_path.is_file()
         reader = build_static_reader(config, "installed-fixture")
         assert reader.metadata["status"] == "complete"
+        assert reader.metadata["schema_version"] == 3
+        assert len(reader.metadata["build_key"]) == 64
+        assert len(reader.metadata["output_tree"]["sha256"]) == 64
         assert "Installed fixture" in reader.index_path.read_text(encoding="utf-8")
+        generation = reader.output_directory.resolve()
+        rebuilt = build_static_reader(config, "installed-fixture")
+        assert rebuilt.output_directory.resolve() == generation
+        latest_reader = root / "derived/collections/installed-fixture/LATEST-READER"
+        assert latest_reader.read_text(encoding="utf-8").strip().endswith(
+            reader.metadata["build_key"]
+        )
     finally:
         server.shutdown()
         server.server_close()
