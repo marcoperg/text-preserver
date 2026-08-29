@@ -39,12 +39,13 @@ text-preserver capture gretil --source frozen-register -c collections.toml --dry
 
 The static origin is limited to one request stream, randomized one-second waits, two attempts, a 2 MiB/s rate limit, explicit URLs, disabled redirects, and source-specific quotas. The seed files are documentary copies; `collection.toml` remains the executable source of capture scope.
 
-As of 2026-08-28, verified local captures exist for all four reviewed source groups: the current register and bulk packages together, plus separate dictionary and frozen-register captures. The latter sources were captured separately to avoid downloading the unchanged 392.5 MiB package set solely to produce an aggregate report. Source-specific `LATEST-*` pointers identify each preserved group; the current framework does not yet combine immutable source captures into one collection-level completeness report.
+As of 2026-08-28, verified local captures exist for all four reviewed source groups: the current register and bulk packages together, plus separate dictionary and frozen-register captures. The latter sources were captured separately to avoid downloading the unchanged 392.5 MiB package set solely to produce an aggregate report. Source-specific `LATEST-*` pointers identify each preserved group, and preservation analysis combines their verified source directories into one immutable collection-level validation.
 
-Run completeness analysis on a verified full capture with:
+Run completeness analysis from `LATEST` and all source pointers, or provide one or more captures explicitly:
 
 ```bash
-text-preserver analyze preservation gretil /path/to/capture -c collections.toml
+text-preserver analyze preservation gretil -c collections.toml
+text-preserver analyze preservation gretil /path/to/capture-a /path/to/capture-b -c collections.toml
 ```
 
 The adapter checks source outcomes, selected context assets, register representation counts and lineage gaps, the exact bulk-package and dictionary sets, frozen-register files, ZIP paths, entry counts, expansion limits, encryption, symlinks, compression ratios, CRCs, TEI roots, and internal `xml:id` values. It never extracts archive members. Seventeen reviewed package filenames use longer section-qualified identifiers than the register; those mappings are explicit, while one bulk-only record and one cross-package duplicate remain warnings rather than being silently discarded.

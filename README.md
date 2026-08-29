@@ -110,11 +110,15 @@ Verification checks object types, sizes, SHA-256 hashes, missing objects, and un
 Run collection-specific completeness analysis after fixity verification:
 
 ```bash
-text-preserver analyze preservation etcsl /path/to/capture \
+text-preserver analyze preservation etcsl \
+  --config collections.toml
+text-preserver analyze preservation gretil /path/to/capture-a /path/to/capture-b \
   --config collections.toml
 ```
 
-Analysis reads the immutable capture and writes `completeness.json` only under `derived/`. It prefers the adapter snapshot preserved with the capture and records the adapter SHA-256; older captures without a snapshot use the current recipe adapter with an explicit warning. The ETCSL adapter compares catalogue IDs with deposited XML filenames, checks ZIP safety and CRCs, performs entity-stubbed XML-shell parsing, verifies root IDs, and reports missing entity and DTD dependencies separately from work-level completeness.
+With no explicit path, analysis verifies and deduplicates collection `LATEST` plus every `LATEST-SOURCE_ID`, then deterministically chooses one provider per source, preferring successful sources and newer capture IDs. One or more explicit paths restrict the candidate set to exactly those captures. Cross-capture analysis exposes only the selected verified source directories through a temporary aggregate view and uses the current recipe adapter with an explicit warning; single-capture analysis continues to prefer the adapter snapshot preserved with that capture.
+
+Reports are immutable and input-addressed at `derived/collections/COLLECTION_ID/validations/VALIDATION_ID/report.json`. The identity covers contributing capture manifests, source selection, adapter, effective analysis settings, configuration, and recipe hashes; an identical invocation safely reuses the existing report. `validations/LATEST` records the latest invoked validation, including an incomplete one. Collection-level `LATEST-VALIDATED` advances only for `complete` or `complete_with_warnings` results, so an incomplete run cannot replace the latest usable validation. The ETCSL adapter compares catalogue IDs with deposited XML filenames, checks ZIP safety and CRCs, performs entity-stubbed XML-shell parsing, verifies root IDs, and reports missing entity and DTD dependencies separately from work-level completeness.
 
 Build a local static reader from a verified capture:
 

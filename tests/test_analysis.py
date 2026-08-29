@@ -95,63 +95,85 @@ user_agent = "text-preserver-test/1.0"
         omit_translation: bool = False,
         metadata_capture_id: str | None = None,
         adapter_source: str | None = None,
-    ) -> None:
-        record = self.capture / "sources/ota-record/mirror"
-        dataset = self.capture / "sources/ota-dataset/mirror"
-        record.mkdir(parents=True)
-        dataset.mkdir(parents=True)
-        recipe_assets = self.capture / "metadata/recipe-assets"
+        capture_id: str | None = None,
+        source_ids: tuple[str, ...] = ("ota-record", "ota-dataset"),
+        source_statuses: dict[str, str] | None = None,
+        collection_id: str = "etcsl-fixture",
+    ) -> Path:
+        actual_capture_id = capture_id or self.capture_id
+        capture = self.capture.parent / actual_capture_id
+        for source_id in source_ids:
+            (capture / f"sources/{source_id}/mirror").mkdir(parents=True)
+        dataset = capture / "sources/ota-dataset/mirror"
+        recipe_assets = capture / "metadata/recipe-assets"
         recipe_assets.mkdir(parents=True)
         if adapter_source is None:
             shutil.copyfile(ETCSL_RECIPE / "inventory.py", recipe_assets / "inventory.py")
         else:
             (recipe_assets / "inventory.py").write_text(adapter_source, encoding="utf-8")
-        shutil.copyfile(
-            ETCSL_RECIPE / "fixtures/catalogue.html",
-            dataset / "etcslfullcat.html",
+        if "ota-dataset" in source_ids:
+            shutil.copyfile(
+                ETCSL_RECIPE / "fixtures/catalogue.html",
+                dataset / "etcslfullcat.html",
+            )
+            for name in (
+                "contents.txt",
+                "corphdr.xml",
+                "etcsl-extensions.dtd",
+                "etcsl-extensions.ent",
+                "etcsl-sux.ent",
+                "etcsl.xml",
+                "etcslmanual.html",
+                "header2518.xml",
+                "readme.txt",
+            ):
+                (dataset / name).write_text("", encoding="utf-8")
+            ids = ["0.1.1", "1.8.1.5.1", "2.4.1.a", "4.03.1"]
+            with zipfile.ZipFile(dataset / "etcsl.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("etcsl/tei/tei2.dtd", "")
+                for identifier in ids:
+                    archive.writestr(
+                        f"etcsl/transliterations/c.{identifier}.xml",
+                        f'<TEI.2 id="c.{identifier}"><text /></TEI.2>',
+                    )
+                for identifier in ids[1:]:
+                    if omit_translation and identifier == "2.4.1.a":
+                        continue
+                    archive.writestr(
+                        f"etcsl/translations/t.{identifier}.xml",
+                        f'<TEI.2 id="t.{identifier}"><text /></TEI.2>',
+                    )
+        statuses = source_statuses or {}
+        records = [
+            {
+                "source_id": source_id,
+                "status": statuses.get(source_id, "complete"),
+            }
+            for source_id in source_ids
+        ]
+        capture_status = (
+            "complete"
+            if all(record["status"] == "complete" for record in records)
+            else "complete_with_warnings"
+            if all(
+                record["status"] in {"complete", "complete_with_warnings"}
+                for record in records
+            )
+            else "partial"
         )
-        for name in (
-            "contents.txt",
-            "corphdr.xml",
-            "etcsl-extensions.dtd",
-            "etcsl-extensions.ent",
-            "etcsl-sux.ent",
-            "etcsl.xml",
-            "etcslmanual.html",
-            "header2518.xml",
-            "readme.txt",
-        ):
-            (dataset / name).write_text("", encoding="utf-8")
-        ids = ["0.1.1", "1.8.1.5.1", "2.4.1.a", "4.03.1"]
-        with zipfile.ZipFile(dataset / "etcsl.zip", "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr("etcsl/tei/tei2.dtd", "")
-            for identifier in ids:
-                archive.writestr(
-                    f"etcsl/transliterations/c.{identifier}.xml",
-                    f'<TEI.2 id="c.{identifier}"><text /></TEI.2>',
-                )
-            for identifier in ids[1:]:
-                if omit_translation and identifier == "2.4.1.a":
-                    continue
-                archive.writestr(
-                    f"etcsl/translations/t.{identifier}.xml",
-                    f'<TEI.2 id="t.{identifier}"><text /></TEI.2>',
-                )
-        (self.capture / "capture.json").write_text(
+        (capture / "capture.json").write_text(
             json.dumps(
                 {
-                    "capture_id": metadata_capture_id or self.capture_id,
-                    "collection_id": "etcsl-fixture",
-                    "status": "complete",
-                    "sources": [
-                        {"source_id": "ota-record", "status": "complete"},
-                        {"source_id": "ota-dataset", "status": "complete"},
-                    ],
+                    "capture_id": metadata_capture_id or actual_capture_id,
+                    "collection_id": collection_id,
+                    "status": capture_status,
+                    "sources": records,
                 }
             ),
             encoding="utf-8",
         )
-        finalize_capture(self.capture)
+        finalize_capture(capture)
+        return capture
 
     def test_writes_complete_report_outside_verified_capture(self) -> None:
         self.create_capture()
@@ -167,6 +189,269 @@ user_agent = "text-preserver-test/1.0"
         self.assertEqual(result.report["collection_id"], "etcsl-fixture")
         self.assertEqual(result.report["capture_id"], self.capture_id)
         self.assertEqual(result.report["analyzer"]["source"], "preserved_capture")
+        self.assertEqual(result.report_path.name, "report.json")
+        self.assertEqual(result.report_path.parent.parent.name, "validations")
+        self.assertEqual(result.report["validation_id"], result.report_path.parent.name)
+        self.assertEqual(result.contributing_capture_ids, (self.capture_id,))
+        self.assertEqual(
+            result.report["contributing_capture_directories"],
+            [str(self.capture.resolve())],
+        )
+        validation_root = self.root / "data/derived/collections/etcsl-fixture/validations"
+        self.assertEqual(
+            (validation_root / "LATEST").read_text(encoding="utf-8").strip(),
+            result.report["validation_id"],
+        )
+        self.assertEqual(
+            (
+                self.root / "data/derived/collections/etcsl-fixture/LATEST-VALIDATED"
+            ).read_text(encoding="utf-8").strip(),
+            f"validations/{result.report['validation_id']}",
+        )
+
+    def test_identical_validation_is_reused_without_overwrite(self) -> None:
+        self.create_capture()
+        config = load_config(self.config_path)
+        first = analyze_preservation(config, "etcsl-fixture", self.capture)
+        original = first.report_path.read_bytes()
+        original_created_at = first.report["created_at"]
+
+        second = analyze_preservation(config, "etcsl-fixture", self.capture)
+
+        self.assertEqual(second.report_path, first.report_path)
+        self.assertEqual(second.report["created_at"], original_created_at)
+        self.assertEqual(second.report_path.read_bytes(), original)
+        self.assertEqual(len(list(first.report_path.parent.parent.glob("*/report.json"))), 1)
+
+    def test_changed_current_adapter_and_config_create_new_validation_ids(self) -> None:
+        recipe_path = self.root / "recipe/collection.toml"
+        recipe_path.write_text(
+            recipe_path.read_text(encoding="utf-8").replace(
+                'inventory_adapter = "inventory.py"',
+                'inventory_adapter = "inventory.py"\nprefer_preserved_adapter = false',
+            ),
+            encoding="utf-8",
+        )
+        self.create_capture()
+        first = analyze_preservation(
+            load_config(self.config_path), "etcsl-fixture", self.capture
+        )
+        adapter_path = self.root / "recipe/inventory.py"
+        adapter_path.write_text(
+            adapter_path.read_text(encoding="utf-8") + "\n# validation identity change\n",
+            encoding="utf-8",
+        )
+        second = analyze_preservation(
+            load_config(self.config_path), "etcsl-fixture", self.capture
+        )
+        self.config_path.write_text(
+            self.config_path.read_text(encoding="utf-8").replace(
+                'operator = "Test operator"', 'operator = "Changed operator"'
+            ),
+            encoding="utf-8",
+        )
+        third = analyze_preservation(
+            load_config(self.config_path), "etcsl-fixture", self.capture
+        )
+
+        self.assertNotEqual(first.report_path, second.report_path)
+        self.assertNotEqual(second.report_path, third.report_path)
+        self.assertEqual(
+            len(
+                list(
+                    (
+                        self.root
+                        / "data/derived/collections/etcsl-fixture/validations"
+                    ).glob("*/report.json")
+                )
+            ),
+            3,
+        )
+
+    def test_legacy_capture_scoped_report_is_not_overwritten(self) -> None:
+        self.create_capture()
+        legacy = (
+            self.root
+            / f"data/derived/collections/etcsl-fixture/captures/{self.capture_id}/completeness.json"
+        )
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text("legacy report\n", encoding="utf-8")
+
+        result = analyze_preservation(
+            load_config(self.config_path), "etcsl-fixture", self.capture
+        )
+
+        self.assertEqual(legacy.read_text(encoding="utf-8"), "legacy report\n")
+        self.assertNotEqual(result.report_path, legacy)
+
+    def test_aggregates_sources_across_explicit_captures(self) -> None:
+        record_capture = self.create_capture(source_ids=("ota-record",))
+        dataset_id = "20260827T120001Z-b1c2d3"
+        dataset_capture = self.create_capture(
+            capture_id=dataset_id,
+            source_ids=("ota-dataset",),
+        )
+
+        result = analyze_preservation(
+            load_config(self.config_path),
+            "etcsl-fixture",
+            [record_capture, dataset_capture],
+        )
+
+        self.assertEqual(result.status, "complete_with_warnings")
+        self.assertEqual(result.capture_directory, dataset_capture.resolve())
+        self.assertEqual(
+            result.report["source_capture_map"],
+            {"ota-dataset": dataset_id, "ota-record": self.capture_id},
+        )
+        self.assertEqual(
+            result.contributing_capture_ids,
+            (self.capture_id, dataset_id),
+        )
+        self.assertEqual(result.report["analyzer"]["source"], "current_recipe")
+        self.assertIn(
+            "analysis used the current recipe adapter",
+            result.report["warnings"][-1],
+        )
+
+    def test_source_selection_prefers_success_before_newer_capture(self) -> None:
+        dataset_capture = self.create_capture(source_ids=("ota-dataset",))
+        newer_id = "20260827T120001Z-b1c2d3"
+        newer_capture = self.create_capture(
+            capture_id=newer_id,
+            source_statuses={"ota-dataset": "partial"},
+        )
+
+        result = analyze_preservation(
+            load_config(self.config_path),
+            "etcsl-fixture",
+            [dataset_capture, newer_capture],
+        )
+
+        self.assertEqual(result.report["source_capture_map"]["ota-dataset"], self.capture_id)
+        self.assertEqual(result.report["source_capture_map"]["ota-record"], newer_id)
+        self.assertEqual(result.capture_directory, newer_capture.resolve())
+
+    def test_defaults_to_all_capture_pointers_and_deduplicates(self) -> None:
+        record_capture = self.create_capture(source_ids=("ota-record",))
+        dataset_id = "20260827T120001Z-b1c2d3"
+        self.create_capture(capture_id=dataset_id, source_ids=("ota-dataset",))
+        collection_root = record_capture.parent.parent
+        (collection_root / "LATEST").write_text(
+            f"captures/{self.capture_id}\n", encoding="utf-8"
+        )
+        (collection_root / "LATEST-ota-record").write_text(
+            f"captures/{self.capture_id}\n", encoding="utf-8"
+        )
+        (collection_root / "LATEST-ota-dataset").write_text(
+            f"captures/{dataset_id}\n", encoding="utf-8"
+        )
+
+        result = analyze_preservation(load_config(self.config_path), "etcsl-fixture")
+
+        self.assertEqual(result.contributing_capture_ids, (self.capture_id, dataset_id))
+        self.assertEqual(len(result.report["validation_inputs"]["captures"]), 2)
+
+    def test_incomplete_validation_updates_latest_but_not_latest_validated(self) -> None:
+        self.create_capture()
+        config = load_config(self.config_path)
+        complete = analyze_preservation(config, "etcsl-fixture", self.capture)
+        incomplete_id = "20260827T120001Z-b1c2d3"
+        incomplete_capture = self.create_capture(
+            capture_id=incomplete_id,
+            omit_translation=True,
+        )
+
+        incomplete = analyze_preservation(
+            config, "etcsl-fixture", incomplete_capture
+        )
+
+        collection_root = self.root / "data/derived/collections/etcsl-fixture"
+        self.assertEqual(incomplete.status, "incomplete")
+        self.assertEqual(
+            (collection_root / "validations/LATEST").read_text(encoding="utf-8").strip(),
+            incomplete.report["validation_id"],
+        )
+        self.assertEqual(
+            (collection_root / "LATEST-VALIDATED").read_text(encoding="utf-8").strip(),
+            f"validations/{complete.report['validation_id']}",
+        )
+
+    def test_rejects_unsafe_source_record(self) -> None:
+        capture = self.create_capture(source_ids=("Unsafe",))
+
+        with self.assertRaisesRegex(AnalysisError, "unsafe source ID"):
+            analyze_preservation(load_config(self.config_path), "etcsl-fixture", capture)
+
+    def test_rejects_capture_from_another_collection(self) -> None:
+        self.create_capture(collection_id="other-collection")
+
+        with self.assertRaisesRegex(AnalysisError, "belongs to collection"):
+            analyze_preservation(load_config(self.config_path), "etcsl-fixture", self.capture)
+
+    def test_rejects_empty_explicit_capture_set(self) -> None:
+        with self.assertRaisesRegex(AnalysisError, "must not be empty"):
+            analyze_preservation(load_config(self.config_path), "etcsl-fixture", [])
+
+    def test_rejects_capture_without_source_metadata(self) -> None:
+        capture = self.create_capture(source_ids=())
+
+        with self.assertRaisesRegex(AnalysisError, "no safe source metadata"):
+            analyze_preservation(load_config(self.config_path), "etcsl-fixture", capture)
+
+    def test_rejects_unsafe_default_pointer(self) -> None:
+        self.create_capture()
+        collection_root = self.capture.parent.parent
+        (collection_root / "LATEST").write_text("../escape\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(AnalysisError, "unsafe capture pointer content"):
+            analyze_preservation(load_config(self.config_path), "etcsl-fixture")
+
+    def test_rejects_source_pointer_to_mismatched_capture(self) -> None:
+        capture = self.create_capture(source_ids=("ota-dataset",))
+        collection_root = capture.parent.parent
+        (collection_root / "LATEST-ota-record").write_text(
+            f"captures/{self.capture_id}\n", encoding="utf-8"
+        )
+
+        with self.assertRaisesRegex(AnalysisError, "successful matching source"):
+            analyze_preservation(load_config(self.config_path), "etcsl-fixture")
+
+    def test_rejects_symlink_validation_pointer(self) -> None:
+        self.create_capture()
+        validations = self.root / "data/derived/collections/etcsl-fixture/validations"
+        validations.mkdir(parents=True)
+        outside = self.root / "outside-validation"
+        outside.write_text("untouched\n", encoding="utf-8")
+        (validations / "LATEST").symlink_to(outside)
+
+        with self.assertRaisesRegex(AnalysisError, "must not be a symlink"):
+            analyze_preservation(load_config(self.config_path), "etcsl-fixture", self.capture)
+
+        self.assertEqual(outside.read_text(encoding="utf-8"), "untouched\n")
+
+    def test_aggregate_adapter_mutation_is_detected_in_contributing_capture(self) -> None:
+        record_capture = self.create_capture(source_ids=("ota-record",))
+        dataset_capture = self.create_capture(
+            capture_id="20260827T120001Z-b1c2d3",
+            source_ids=("ota-dataset",),
+        )
+        (self.root / "recipe/inventory.py").write_text(
+            """
+def analyze_capture(capture_directory, **kwargs):
+    target = capture_directory / "sources/ota-dataset/mirror/etcslfullcat.html"
+    target.write_text("changed", encoding="utf-8")
+    return {"status": "complete", "errors": [], "warnings": []}
+""".strip(),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(AnalysisError, "capture changed during analysis"):
+            analyze_preservation(
+                load_config(self.config_path),
+                "etcsl-fixture",
+                [record_capture, dataset_capture],
+            )
 
     def test_can_reassess_capture_with_current_adapter(self) -> None:
         recipe_path = self.root / "recipe/collection.toml"
@@ -577,6 +862,32 @@ def render_static_reader(capture_directory, **kwargs):
 
         self.assertEqual(exit_code, 1)
         self.assertEqual(json.loads(output.getvalue())["report"]["status"], "incomplete")
+
+    def test_cli_accepts_multiple_capture_paths(self) -> None:
+        record_capture = self.create_capture(source_ids=("ota-record",))
+        dataset_capture = self.create_capture(
+            capture_id="20260827T120001Z-b1c2d3",
+            source_ids=("ota-dataset",),
+        )
+        output = StringIO()
+
+        with redirect_stdout(output):
+            exit_code = main(
+                [
+                    "analyze",
+                    "preservation",
+                    "etcsl-fixture",
+                    str(record_capture),
+                    str(dataset_capture),
+                    "-c",
+                    str(self.config_path),
+                    "--json",
+                ]
+            )
+
+        value = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(value["contributing_capture_ids"]), 2)
 
     def test_rejects_capture_with_failed_fixity(self) -> None:
         self.create_capture()

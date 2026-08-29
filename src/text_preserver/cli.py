@@ -107,10 +107,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     preservation.add_argument("collection_id", help="configured collection ID")
     preservation.add_argument(
-        "capture_path",
-        nargs="?",
+        "capture_paths",
+        nargs="*",
         type=Path,
-        help="capture directory; defaults to the collection LATEST pointer",
+        help=(
+            "capture directories; defaults to collection LATEST and all "
+            "LATEST-SOURCE_ID pointers"
+        ),
     )
     _add_config_argument(preservation)
     preservation.add_argument("--json", action="store_true", help="emit machine-readable report")
@@ -249,7 +252,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = analyze_preservation(
                 config,
                 args.collection_id,
-                args.capture_path,
+                args.capture_paths or None,
             )
         except (ConfigError, AnalysisError) as exc:
             print(f"analysis error: {exc}", file=sys.stderr)

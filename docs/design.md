@@ -1007,7 +1007,7 @@ source settings
 
 Collection-specific knowledge should live in recipes, adapters, and rules rather than in hard-coded branches in the generic engine.
 
-Preservation analysis uses the adapter embedded in the immutable capture by default. A recipe may set `prefer_preserved_adapter = false` when collection-level completeness criteria are expected to evolve and old captures must be reassessed by the current adapter; reports record which adapter source and hash were used.
+Preservation analysis uses the adapter embedded in the immutable capture by default when one capture supplies the selected source view. A recipe may set `prefer_preserved_adapter = false` when collection-level completeness criteria are expected to evolve and old captures must be reassessed by the current adapter. An aggregate assembled from multiple captures always uses the current recipe adapter because no capture-time adapter represents that combined input. Reports record the adapter source and hash and warn whenever current recipe code is used.
 
 ---
 
@@ -1055,14 +1055,16 @@ data/
 │   └── collections/
 │       └── etcsl/
 │           ├── reader -> captures/20260827T120000Z-a1b2c3/reader-generations/...
+│           ├── LATEST-VALIDATED
 │           ├── catalogue.sqlite
 │           ├── normalized/
 │           ├── passage-map.jsonl
 │           ├── facts/
 │           │   └── capture.pl
-│           ├── reports/
-│           │   ├── completeness.json
-│           │   └── changes.html
+│           ├── validations/
+│           │   ├── LATEST
+│           │   └── VALIDATION_ID/
+│           │       └── report.json
 │           └── captures/
 │               └── 20260827T120000Z-a1b2c3/
 │                   ├── reader -> reader-generations/...
@@ -1081,7 +1083,9 @@ Capture IDs should use UTC plus a collision-resistant suffix:
 20260827T120000Z-a1b2c3
 ```
 
-The portable text pointer `LATEST` identifies the newest complete, verified, unfiltered collection capture. `LATEST-SOURCE_ID` identifies the newest fixity-verified capture in which that source completed successfully, including success with warnings. Pointer updates happen only after immediate whole-capture fixity verification. These pointers are conveniences, not the archive.
+The portable archive text pointer `LATEST` identifies the newest complete, verified, unfiltered collection capture. `LATEST-SOURCE_ID` identifies the newest fixity-verified capture in which that source completed successfully, including success with warnings. Pointer updates happen only after immediate whole-capture fixity verification. These pointers are conveniences, not the archive.
+
+Derived validation pointers have separate semantics. `validations/LATEST` names the latest invoked immutable validation whether usable or incomplete. Collection-level `LATEST-VALIDATED` names the latest invoked validation whose status is `complete` or `complete_with_warnings`; an incomplete result never displaces it. Both are portable text pointers, are updated atomically, and must resolve below the collection's derived validation directory.
 
 ---
 
@@ -1347,6 +1351,10 @@ The system should answer:
 - Which source was optional, and which was required?
 - Did the crawler stop because of quota, errors, or scope?
 - Did a repository deposit change without a new version identifier?
+
+Analysis may combine independently finalized source captures. With no explicit input, the candidate set is collection `LATEST` plus every existing `LATEST-SOURCE_ID`; explicit capture paths replace that set. Every candidate is fixity-verified, source providers are selected deterministically by successful status and then newer capture ID, and every contributing capture is verified again after adapter execution. The temporary aggregate contains a synthetic `capture.json` and source links whose targets remain under those verified captures.
+
+Validation reports are immutable, derived objects under `derived/collections/ID/validations/VALIDATION_ID/report.json`. `VALIDATION_ID` is the SHA-256 of canonical JSON covering the report schema, contributing capture IDs and manifest hashes, source-to-capture map, adapter digest and source, effective expectations, required representations and sources, current configuration hash, and current recipe TOML hash when present. Reports record those inputs and a creation timestamp. Repeating identical inputs reuses the existing report rather than overwriting historical assessment output.
 
 ### Technical validity
 
