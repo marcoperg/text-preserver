@@ -81,6 +81,8 @@ An external recipe bundle is bounded by the directory containing its selected re
 
 `doctor` validates collection and source structure, rejects unsafe scope and credential-bearing arguments, checks GNU Wget WARC support, checks storage locations, and reports available space. `collections list/show` display the fully resolved configuration without making requests.
 
+The dependency-free runtime validator remains authoritative for inherited settings, filesystem safety, URL/host relationships, and cross-field references. The distributed JSON Schemas describe the portable document structure. The optional `test` dependencies run representative valid and invalid documents through both implementations to detect structural drift.
+
 Inspect the exact Wget commands and paths for a collection without writing files or making network requests:
 
 ```bash

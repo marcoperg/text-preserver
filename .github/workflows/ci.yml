@@ -26,10 +26,12 @@ jobs:
       - name: Install GNU Wget on macOS
         if: runner.os == 'macOS'
         run: brew install wget
+      - name: Install test dependencies
+        run: python -m pip install '.[test]'
       - name: Run source tests
         run: PYTHONPATH=src python -m unittest
       - name: Build distributions
-        run: python -m pip install build && python -m build
+        run: python -m build
       - name: Install wheel in clean environment
         run: python -m venv .wheel-venv && .wheel-venv/bin/python -m pip install dist/*.whl
       - name: Run installed fixture flow

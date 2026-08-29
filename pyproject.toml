@@ -24,6 +24,12 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+test = [
+  "build>=1.2,<2",
+  "jsonschema>=4.23,<5",
+]
+
 [project.scripts]
 text-preserver = "text_preserver.cli:main"
 
@@ -71,4 +77,9 @@ where = ["src"]
 "share/text-preserver/collections/sacred-texts/seeds" = [
   "collections/sacred-texts/seeds/internet-archive-2021.txt",
   "collections/sacred-texts/seeds/wayback-download-recovery.txt",
+]
+"share/text-preserver/schemas" = [
+  "schemas/capture-manifest.schema.json",
+  "schemas/collection-recipe.schema.json",
+  "schemas/config.schema.json",
 ]
