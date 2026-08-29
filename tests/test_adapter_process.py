@@ -15,6 +15,8 @@ from text_preserver.adapter_process import (
     adapter_digest,
     invoke_adapter,
 )
+from text_preserver.access.reader_model import reader_model_identity
+from text_preserver.access.reader_shell import reader_shell_identity
 from text_preserver.preservation.recipe_bundle import scan_recipe_directory
 
 
@@ -138,6 +140,65 @@ def handle_operation(operation, *, context, arguments):
         self.assertTrue(result.ok, result.error)
         self.assertEqual(result.result["operation"], "inventory")
         self.assertEqual(result.result["context"]["collection_id"], "example")
+
+    def test_reader_shell_source_is_bound_to_expected_digest(self) -> None:
+        adapter = self.write_adapter(
+            """
+from text_preserver.access.reader_shell import reader_stylesheet
+from text_preserver.adapters import ReaderReport
+
+def build_reader(context):
+    return ReaderReport(
+        "complete",
+        {"stylesheet_bytes": len(reader_stylesheet())},
+        (),
+        {"index.html": "reader"},
+    )
+"""
+        )
+        output = self.root / "reader-output"
+        output.mkdir()
+        context = {
+            "capture_directory": str(self.capture),
+            "output_directory": str(output),
+            "expected_work_count": 1,
+        }
+
+        mismatch = invoke_adapter(
+            adapter,
+            adapter_sha256=adapter_digest(adapter),
+            recipe_api=2,
+            operation="reader",
+            context=context,
+            reader_support={
+                "text_preserver.access.reader_model": str(reader_model_identity()["sha256"]),
+                "text_preserver.access.reader_shell": "f" * 64,
+            },
+        )
+        with self.assertRaisesRegex(AdapterProcessError, "reader_support"):
+            invoke_adapter(
+                adapter,
+                adapter_sha256=adapter_digest(adapter),
+                recipe_api=2,
+                operation="reader",
+                context=context,
+            )
+        matched = invoke_adapter(
+            adapter,
+            adapter_sha256=adapter_digest(adapter),
+            recipe_api=2,
+            operation="reader",
+            context=context,
+            reader_support={
+                "text_preserver.access.reader_model": str(reader_model_identity()["sha256"]),
+                "text_preserver.access.reader_shell": str(reader_shell_identity()["sha256"]),
+            },
+        )
+
+        self.assertFalse(mismatch.ok)
+        assert mismatch.error is not None
+        self.assertIn("reader support module", mismatch.error["message"])
+        self.assertTrue(matched.ok, matched.error)
 
     def test_typed_api2_validation_operation(self) -> None:
         adapter = self.write_adapter(
@@ -446,7 +507,7 @@ def handle_operation(operation, *, context, arguments):
     def test_worker_rejects_unknown_envelope_fields(self) -> None:
         request = {
             "protocol": "text-preserver.adapter",
-            "version": 1,
+            "version": 2,
             "kind": "request",
             "request_id": "1" * 32,
             "unexpected": True,

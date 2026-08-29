@@ -11,6 +11,29 @@ import xml.etree.ElementTree as ElementTree
 import zipfile
 
 from text_preserver.adapters import ReaderContext, ReaderReport
+from text_preserver.access.reader_model import (
+    AccessArtifact,
+    AccessCollection,
+    AccessItem,
+    AccessRelation,
+    AccessRepresentation,
+    AccessSegment,
+    access_id,
+    access_json,
+    route_token,
+)
+from text_preserver.access.reader_shell import (
+    ReaderFact,
+    ReaderLink,
+    reader_stylesheet,
+    render_artifact_reference,
+    render_citation,
+    render_document,
+    render_facts,
+    render_navigation,
+    render_notice,
+    render_status,
+)
 
 from .validator import (
     BUILTIN_ENTITIES,
@@ -108,6 +131,9 @@ TITLE_SUFFIXES = (
     " -- a composite transliteration",
     " -- an English prose translation",
 )
+COLLECTION_RIGHTS = (
+    "Public access does not imply permission to redistribute captures; preserve the site's notices and repository metadata."
+)
 
 
 def build_reader(context: ReaderContext) -> ReaderReport:
@@ -166,7 +192,25 @@ def render_static_reader(
     identifiers = sorted(records, key=_identifier_sort_key)
     if not identifiers:
         raise InventoryError("ETCSL deposit contains no text XML files")
-    files: dict[str, str] = {}
+    files: dict[str, str] = {
+        "assets/reader.css": reader_stylesheet(),
+        "assets/etcsl.css": _etcsl_stylesheet(),
+    }
+    collection_access_id = access_id("etcsl", "collection", "")
+    package_artifact_id = access_id("etcsl", "artifact", "ota-package")
+    archive_capture_path = archive_path.relative_to(capture_directory).as_posix()
+    artifacts = [
+        AccessArtifact(
+            package_artifact_id,
+            "Canonical ETCSL deposit ZIP",
+            "preservation_original",
+            archive_capture_path,
+            "application/zip",
+            str(archive_report["sha256"]),
+        )
+    ]
+    access_items: list[AccessItem] = []
+    relations: list[AccessRelation] = []
     titles: dict[str, str] = {}
     for identifier in identifiers:
         record = records[identifier]
@@ -179,7 +223,7 @@ def render_static_reader(
     for position, identifier in enumerate(identifiers):
         previous_id = identifiers[position - 1] if position else None
         next_id = identifiers[position + 1] if position + 1 < len(identifiers) else None
-        files[f"works/{identifier}.html"] = _render_work_page(
+        page, item, item_artifacts, item_relations = _render_work_page(
             identifier,
             titles[identifier],
             records[identifier],
@@ -187,15 +231,14 @@ def render_static_reader(
             archive_report["sha256"],
             previous_id,
             next_id,
+            archive_capture_path,
+            package_artifact_id,
         )
-    files["index.html"] = _render_reader_index(
-        identifiers,
-        titles,
-        records,
-        capture_directory.name,
-        archive_report["sha256"],
-    )
-
+        files[f"works/{identifier}.html"] = page
+        access_items.append(item)
+        artifacts.extend(item_artifacts)
+        relations.append(AccessRelation(item.id, "part_of", collection_access_id))
+        relations.extend(item_relations)
     warnings = [str(value) for value in archive_report["errors"]]
     warnings.extend(str(value) for value in archive_report["warnings"])
     if unresolved_entities:
@@ -216,12 +259,35 @@ def render_static_reader(
         == archive_report["xml_file_count"]
         and archive_report["filename_id_match_count"] == archive_report["xml_file_count"]
     )
+    status = (
+        "incomplete"
+        if not inventory_complete
+        else ("complete_with_warnings" if warnings else "complete")
+    )
+    files["index.html"] = _render_reader_index(
+        identifiers,
+        titles,
+        records,
+        capture_directory.name,
+        archive_report["sha256"],
+        status,
+        warnings,
+        package_artifact_id,
+    )
+    files["access.json"] = access_json(
+        AccessCollection(
+            collection_access_id,
+            "Electronic Text Corpus of Sumerian Literature",
+            status,
+            "index.html",
+            tuple(access_items),
+            tuple(artifacts),
+            tuple(relations),
+            (COLLECTION_RIGHTS,),
+        )
+    )
     return {
-        "status": (
-            "incomplete"
-            if not inventory_complete
-            else ("complete_with_warnings" if warnings else "complete")
-        ),
+        "status": status,
         "files": files,
         "summary": {
             "work_count": len(records),
@@ -290,6 +356,9 @@ def _render_reader_index(
     records: dict[str, dict[str, object]],
     capture_id: str,
     archive_sha256: object,
+    status: str,
+    warnings: Sequence[str],
+    package_artifact_id: str,
 ) -> str:
     entries: list[str] = []
     current_group: str | None = None
@@ -320,24 +389,26 @@ def _render_reader_index(
     if current_group is not None:
         entries.append("</ol></section>")
     content = "".join(entries)
-    return _html_document(
+    return render_document(
         "ETCSL Reader",
         f"""
-<header class="site-header">
-  <p class="eyebrow">Derived access copy</p>
+<header class="reader-header">
+  <p class="reader-eyebrow">Derived access copy</p>
   <h1>Electronic Text Corpus of Sumerian Literature</h1>
-  <p class="lede">A local catalogue reconstructed from the verified canonical XML deposit.</p>
+  <p class="reader-lede">A local catalogue reconstructed from the verified canonical XML deposit.</p>
 </header>
-<main>
-  <aside class="notice">This is not the original ETCSL website. ETCSL character,
-  determinative, subscript, and editorial entities are rendered from the corpus support
-  declarations; any unknown entity remains visible as its source token.</aside>
+<main class="reader-main">
+  {render_notice("This is not the original ETCSL website. ETCSL character, determinative, subscript, and editorial entities are rendered from the corpus support declarations; any unknown entity remains visible as its source token.")}
+  {render_notice(COLLECTION_RIGHTS)}
+  {render_status(status, warnings)}
   <div class="catalogue-meta"><span>{len(identifiers)} compositions</span>
   <span>Capture <code>{escape_html(capture_id)}</code></span></div>
   {content}
 </main>
-<footer>Canonical archive SHA-256: <code>{escape_html(str(archive_sha256))}</code></footer>
+<footer class="reader-footer">Canonical archive SHA-256: <code>{escape_html(str(archive_sha256))}</code>
+{render_artifact_reference("Machine-readable source artifact", package_artifact_id, "access.json")}</footer>
 """,
+        collection_stylesheet="etcsl.css",
     )
 
 
@@ -349,49 +420,124 @@ def _render_work_page(
     archive_sha256: object,
     previous_id: str | None,
     next_id: str | None,
-) -> str:
-    navigation = ['<a href="../index.html">Catalogue</a>']
-    if previous_id is not None:
-        navigation.append(
-            f'<a href="{escape_html(previous_id, quote=True)}.html">&larr; {escape_html(previous_id)}</a>'
-        )
-    if next_id is not None:
-        navigation.append(
-            f'<a href="{escape_html(next_id, quote=True)}.html">{escape_html(next_id)} &rarr;</a>'
-        )
+    archive_capture_path: str,
+    package_artifact_id: str,
+) -> tuple[str, AccessItem, tuple[AccessArtifact, ...], tuple[AccessRelation, ...]]:
+    navigation = render_navigation(
+        (ReaderLink("ETCSL catalogue", "../index.html"),),
+        previous=(
+            ReaderLink(previous_id, f"{previous_id}.html")
+            if previous_id is not None
+            else None
+        ),
+        next_=(ReaderLink(next_id, f"{next_id}.html") if next_id is not None else None),
+    )
     columns: list[str] = []
+    representations: list[AccessRepresentation] = []
+    artifacts: list[AccessArtifact] = []
+    route = f"works/{identifier}.html"
+    item_id = access_id("etcsl", "item", identifier)
     for key, heading in (
         ("transliteration", "Composite transliteration"),
         ("translation", "English prose translation"),
     ):
         root = record.get(key)
         if isinstance(root, ElementTree.Element):
-            source_path = escape_html(str(record[f"{key}_path"]))
+            member_path = str(record[f"{key}_path"])
+            source_path = escape_html(member_path)
             language = "sux-Latn" if key == "transliteration" else "en"
+            artifact_id = access_id("etcsl", "artifact", member_path)
+            representation_id = access_id("etcsl", "representation", f"{identifier}/{key}")
+            body, segments = _render_text_bodies(
+                root,
+                identifier=identifier,
+                representation=key,
+                route=route,
+            )
+            artifacts.append(
+                AccessArtifact(
+                    artifact_id,
+                    f"ETCSL {heading} XML",
+                    "preservation_original",
+                    archive_capture_path,
+                    "application/xml",
+                    container_id=package_artifact_id,
+                    member_path=member_path,
+                )
+            )
+            representations.append(
+                AccessRepresentation(
+                    representation_id,
+                    heading,
+                    key,
+                    language,
+                    f"{route}#representation-{key}",
+                    (artifact_id,),
+                    segments,
+                )
+            )
             columns.append(
-                f'<article class="representation" lang="{language}"><header><h2>{heading}</h2>'
-                f'<p class="source-path">{source_path}</p></header>{_render_text_bodies(root)}</article>'
+                f'<article id="representation-{key}" class="representation" lang="{language}"><header><h2>{heading}</h2>'
+                f'<p class="source-path">{source_path}</p>'
+                f'{render_artifact_reference("Source artifact", artifact_id, "../access.json")}'
+                f"</header>{body}</article>"
             )
         else:
             columns.append(
-                f'<article class="representation unavailable"><h2>{heading}</h2>'
+                f'<article id="representation-{key}" class="representation unavailable"><h2>{heading}</h2>'
                 f"<p>No {escape_html(key)} is present in the canonical deposit.</p></article>"
             )
-    return _html_document(
+    provenance = render_facts(
+        (
+            ReaderFact("Capture", capture_id),
+            ReaderFact("Archive SHA-256", str(archive_sha256)),
+        )
+    )
+    relations: list[AccessRelation] = []
+    by_kind = {value.kind: value for value in representations}
+    if "translation" in by_kind and "transliteration" in by_kind:
+        relations.append(
+            AccessRelation(
+                by_kind["translation"].id,
+                "translation_of",
+                by_kind["transliteration"].id,
+            )
+        )
+    citation_text = f"ETCSL {identifier}, {title}. Derived from capture {capture_id}."
+    item = AccessItem(
+        item_id,
+        title,
+        "composition",
+        route,
+        citation_text,
+        tuple(representations),
+    )
+    citation = render_citation(citation_text, item_id)
+    page = render_document(
         f"{identifier} {title}",
         f"""
-<nav class="work-nav">{' '.join(navigation)}</nav>
-<header class="work-header"><p class="eyebrow">ETCSL {escape_html(identifier)}</p>
+{navigation}
+<header class="reader-header"><p class="reader-eyebrow">ETCSL {escape_html(identifier)}</p>
 <h1>{escape_html(title)}</h1></header>
-<main class="parallel-text">{''.join(columns)}</main>
-<footer><span>Capture <code>{escape_html(capture_id)}</code></span>
-<span>Archive SHA-256 <code>{escape_html(str(archive_sha256))}</code></span></footer>
+<main class="reader-main"><div class="parallel-text">{''.join(columns)}</div>{citation}</main>
+<footer class="reader-footer">{provenance}</footer>
 """,
+        asset_prefix="../",
+        collection_stylesheet="etcsl.css",
     )
+    return page, item, tuple(artifacts), tuple(relations)
 
 
-def _render_text_bodies(root: ElementTree.Element) -> str:
+def _render_text_bodies(
+    root: ElementTree.Element,
+    *,
+    identifier: str,
+    representation: str,
+    route: str,
+) -> tuple[str, tuple[AccessSegment, ...]]:
     sections: list[str] = []
+    segments: list[AccessSegment] = []
+    used_segments: dict[str, int] = {}
     for text in root.iter("text"):
         for body in text.findall("./body"):
             label_parts: list[str] = []
@@ -405,12 +551,22 @@ def _render_text_bodies(root: ElementTree.Element) -> str:
             heading = " - ".join(label_parts)
             heading_html = f"<h3>{escape_html(heading or 'Text')}</h3>"
             sections.append(
-                f'<section class="text-body">{heading_html}{_render_blocks(body)}</section>'
+                f'<section class="text-body">{heading_html}'
+                f'{_render_blocks(body, identifier, representation, route, used_segments, segments)}'
+                "</section>"
             )
-    return "".join(sections) or '<p class="unavailable">No text body was found.</p>'
+    content = "".join(sections) or '<p class="unavailable">No text body was found.</p>'
+    return content, tuple(segments)
 
 
-def _render_blocks(element: ElementTree.Element) -> str:
+def _render_blocks(
+    element: ElementTree.Element,
+    identifier: str,
+    representation: str,
+    route: str,
+    used_segments: dict[str, int],
+    segments: list[AccessSegment],
+) -> str:
     parts: list[str] = []
     if element.text and element.text.strip():
         parts.append(f"<p>{_render_reader_text(element.text.strip())}</p>")
@@ -420,28 +576,54 @@ def _render_blocks(element: ElementTree.Element) -> str:
             parts.append(f"<h4>{_render_inline_content(child)}</h4>")
         elif tag == "l":
             label = escape_html(child.get("n", ""))
+            anchor = _segment_anchor(
+                identifier,
+                representation,
+                "line",
+                child.get("n", ""),
+                route,
+                used_segments,
+                segments,
+            )
             parts.append(
-                f'<div class="line"><span class="line-number">{label}</span>'
+                f'<div{anchor} class="line"><span class="line-number">{label}</span>'
                 f'<span class="line-text">{_render_inline_content(child)}</span></div>'
             )
         elif tag == "p":
             label = escape_html(child.get("n", ""))
+            anchor = _segment_anchor(
+                identifier,
+                representation,
+                "paragraph",
+                child.get("n", ""),
+                route,
+                used_segments,
+                segments,
+            )
             parts.append(
-                f'<p class="paragraph"><span class="line-number">{label}</span>'
+                f'<p{anchor} class="paragraph"><span class="line-number">{label}</span>'
                 f"{_render_inline_content(child)}</p>"
             )
         elif tag == "div1":
             label = child.get("n") or child.get("type") or "Section"
             parts.append(
                 f'<section class="segment"><h4>{escape_html(label)}</h4>'
-                f"{_render_blocks(child)}</section>"
+                f"{_render_blocks(child, identifier, representation, route, used_segments, segments)}</section>"
             )
         elif tag == "lg":
             label = child.get("type")
             heading = f'<h4>{escape_html(label)}</h4>' if label else ""
-            parts.append(f'<section class="line-group">{heading}{_render_blocks(child)}</section>')
+            parts.append(
+                f'<section class="line-group">{heading}'
+                f"{_render_blocks(child, identifier, representation, route, used_segments, segments)}"
+                "</section>"
+            )
         elif tag == "trailer":
-            parts.append(f'<aside class="trailer">{_render_blocks(child)}</aside>')
+            parts.append(
+                f'<aside class="trailer">'
+                f"{_render_blocks(child, identifier, representation, route, used_segments, segments)}"
+                "</aside>"
+            )
         else:
             content = _render_inline_element(child)
             if content.strip():
@@ -449,6 +631,33 @@ def _render_blocks(element: ElementTree.Element) -> str:
         if child.tail and child.tail.strip():
             parts.append(f"<p>{_render_reader_text(child.tail.strip())}</p>")
     return "".join(parts)
+
+
+def _segment_anchor(
+    identifier: str,
+    representation: str,
+    kind: str,
+    label: str,
+    route: str,
+    used: dict[str, int],
+    segments: list[AccessSegment],
+) -> str:
+    if not label:
+        return ""
+    key = f"{kind}:{label}"
+    occurrence = used.get(key, 0) + 1
+    used[key] = occurrence
+    anchor = (
+        f"segment-{route_token(representation)}-{route_token(kind)}-"
+        f"{route_token(label)}--occurrence-{occurrence}"
+    )
+    segment_id = access_id(
+        "etcsl",
+        "segment",
+        f"{identifier}/{representation}/{kind}/{label}/{occurrence}",
+    )
+    segments.append(AccessSegment(segment_id, f"{kind.title()} {label}", f"{route}#{anchor}"))
+    return f' id="{anchor}"'
 
 
 def _render_inline_content(element: ElementTree.Element) -> str:
@@ -519,53 +728,26 @@ def _render_inline_element(element: ElementTree.Element) -> str:
     return content
 
 
-def _html_document(title: str, content: str) -> str:
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
-<title>{escape_html(title)}</title>
-<style>
-:root {{ color-scheme: light; --ink:#211c17; --muted:#71675d; --paper:#f4efe3;
-  --panel:#fffdf7; --rule:#c7bda9; --accent:#8b321f; --blue:#234f61; }}
-* {{ box-sizing:border-box; }}
-body {{ margin:0; color:var(--ink); background:var(--paper); font:17px/1.62 Georgia,serif; }}
-a {{ color:var(--blue); text-decoration-thickness:.08em; text-underline-offset:.16em; }}
-code,.work-id,.line-number,.source-path {{ font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }}
-footer code {{ overflow-wrap:anywhere; }}
-.site-header,.work-header {{ padding:4rem max(5vw,1.25rem) 2.5rem; border-bottom:1px solid var(--rule); }}
-h1,h2,h3,h4 {{ line-height:1.15; font-weight:600; }} h1 {{ max-width:22ch; font-size:clamp(2.3rem,6vw,5rem); margin:.2rem 0; }}
-.eyebrow {{ color:var(--accent); font:700 .76rem/1.2 ui-monospace,monospace; letter-spacing:.14em; text-transform:uppercase; }}
-.lede {{ max-width:55ch; color:var(--muted); font-size:1.15rem; }}
-main {{ width:min(1100px,92vw); margin:2rem auto 5rem; }}
-.notice {{ border-left:4px solid var(--accent); padding:1rem 1.2rem; background:var(--panel); }}
-.catalogue-meta,footer,.work-nav {{ display:flex; flex-wrap:wrap; gap:1rem 2rem; color:var(--muted); }}
-.catalogue-group {{ margin-top:3rem; }} .catalogue-group ol {{ list-style:none; padding:0; }}
-.catalogue-group li {{ display:grid; grid-template-columns:1fr auto; gap:1rem; border-top:1px solid var(--rule); padding:.8rem 0; }}
-.catalogue-group a {{ text-decoration:none; }} .work-id {{ display:inline-block; width:7rem; color:var(--accent); }}
-.representations {{ color:var(--muted); font-size:.82rem; }}
-.work-nav {{ padding:1rem max(4vw,1rem); border-bottom:1px solid var(--rule); background:var(--panel); }}
-.parallel-text {{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:2rem; align-items:start; }}
-.representation {{ min-width:0; padding:1.5rem; background:var(--panel); border:1px solid var(--rule); }}
-.representation>header {{ border-bottom:1px solid var(--rule); margin-bottom:1.5rem; }}
-.source-path {{ overflow-wrap:anywhere; color:var(--muted); font-size:.7rem; }}
-.text-body+.text-body,.segment,.line-group,.trailer {{ margin-top:1.75rem; }}
-.line,.paragraph {{ position:relative; padding-left:4.8rem; margin:.55rem 0; }}
-.line-number {{ position:absolute; left:0; width:4rem; color:var(--muted); font-size:.72rem; text-align:right; }}
-.note {{ color:var(--muted); font-size:.9em; }} .gap {{ color:var(--accent); }}
-.foreign {{ font-style:italic; }} .unclear {{ text-decoration:underline dotted; }}
-.correction {{ border-bottom:1px dashed var(--accent); }} .milestone {{ color:var(--accent); }}
-.determinative {{ color:var(--accent); font-style:normal; }}
-.ruling {{ display:inline-block; min-width:7rem; color:var(--muted); letter-spacing:.1em; }}
-.trailer {{ border-top:1px solid var(--rule); padding-top:1rem; font-style:italic; }}
-footer {{ width:min(1100px,92vw); margin:3rem auto; padding-top:1rem; border-top:1px solid var(--rule); font-size:.72rem; }}
-@media (max-width:800px) {{ .parallel-text {{ grid-template-columns:1fr; }} .catalogue-group li {{ grid-template-columns:1fr; }} }}
-@media print {{ body {{ background:white; }} .work-nav {{ display:none; }} .representation {{ border:0; padding:0; }} }}
-</style>
-</head>
-<body>{content}</body>
-</html>
+def _etcsl_stylesheet() -> str:
+    return """:root{--reader-paper:#f4efe3;--reader-sheet:#fffdf7;--reader-rule:#c7bda9;
+--reader-accent:#8b321f;--reader-link:#234f61}.catalogue-meta{display:flex;flex-wrap:wrap;
+gap:1rem 2rem;color:var(--reader-muted)}.catalogue-group{margin-top:3rem}.catalogue-group ol{
+list-style:none;padding:0}.catalogue-group li{display:grid;grid-template-columns:1fr auto;gap:1rem;
+border-top:1px solid var(--reader-rule);padding:.8rem 0}.catalogue-group a{text-decoration:none}
+.work-id,.line-number,.source-path{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.work-id{display:inline-block;width:7rem;color:var(--reader-accent)}.representations{
+color:var(--reader-muted);font-size:.82rem}.parallel-text{display:grid;grid-template-columns:
+minmax(0,1fr) minmax(0,1fr);gap:2rem;align-items:start}.representation{min-width:0;
+padding:1.5rem;background:var(--reader-sheet);border:1px solid var(--reader-rule)}
+.representation>header{border-bottom:1px solid var(--reader-rule);margin-bottom:1.5rem}
+.source-path{overflow-wrap:anywhere;color:var(--reader-muted);font-size:.7rem}.text-body+.text-body,
+.segment,.line-group,.trailer{margin-top:1.75rem}.line,.paragraph{position:relative;
+padding-left:4.8rem;margin:.55rem 0}.line-number{position:absolute;left:0;width:4rem;
+color:var(--reader-muted);font-size:.72rem;text-align:right}.note{color:var(--reader-muted);
+font-size:.9em}.gap,.correction,.milestone,.determinative{color:var(--reader-accent)}.foreign{
+font-style:italic}.unclear{text-decoration:underline dotted}.correction{border-bottom:1px dashed
+var(--reader-accent)}.determinative{font-style:normal}.ruling{display:inline-block;min-width:7rem;
+color:var(--reader-muted);letter-spacing:.1em}.trailer{border-top:1px solid var(--reader-rule);
+padding-top:1rem;font-style:italic}@media(max-width:800px){.parallel-text,.catalogue-group li{
+grid-template-columns:1fr}}@media print{.representation{border:0;padding:0}}
 """

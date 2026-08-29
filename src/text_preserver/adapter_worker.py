@@ -19,10 +19,14 @@ from typing import Any, Mapping
 
 
 PROTOCOL_NAME = "text-preserver.adapter"
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 _ID_RE = re.compile(r"[0-9a-f]{32}")
 _OPERATION_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_READER_SUPPORT_MODULES = (
+    "text_preserver.access.reader_model",
+    "text_preserver.access.reader_shell",
+)
 
 
 class ProtocolError(ValueError):
@@ -50,6 +54,7 @@ def main() -> int:
         _redirect_diagnostics(request["diagnostic_paths"])
         controls = _apply_controls(request["limits"], request["policy"])
         try:
+            _load_reader_support(request)
             result = _invoke(request)
             response = _response(request_id, True, result, None, controls, request)
         except ProtocolError as exc:
@@ -136,6 +141,7 @@ def _validate_request(value: Any) -> None:
         "operation",
         "limits",
         "policy",
+        "support",
         "diagnostic_paths",
     }
     if not isinstance(value, dict) or set(value) != top:
@@ -224,6 +230,27 @@ def _validate_request(value: Any) -> None:
         )
     ):
         raise ProtocolError("invalid_request", "runtime policy is invalid")
+    support = value["support"]
+    modules = support.get("modules") if isinstance(support, dict) else None
+    requires_reader_support = adapter["recipe_api"] == 2 and operation["name"] == "reader"
+    if (
+        not isinstance(support, dict)
+        or set(support) != {"modules"}
+        or not isinstance(modules, dict)
+        or requires_reader_support != bool(modules)
+        or (
+            modules
+            and (
+                set(modules) != set(_READER_SUPPORT_MODULES)
+                or any(
+                    not isinstance(digest, str) or _DIGEST_RE.fullmatch(digest) is None
+                    for digest in modules.values()
+                )
+                or not requires_reader_support
+            )
+        )
+    ):
+        raise ProtocolError("invalid_request", "reader support descriptor is invalid")
     paths = value["diagnostic_paths"]
     if (
         not isinstance(paths, dict)
@@ -244,6 +271,50 @@ def _redirect_diagnostics(paths: dict[str, str]) -> None:
     os.dup2(stderr_fd, sys.stderr.fileno())
     os.close(stdout_fd)
     os.close(stderr_fd)
+
+
+def _load_reader_support(request: Mapping[str, Any]) -> None:
+    expected_modules = request["support"]["modules"]
+    if not expected_modules:
+        return
+    package = importlib.import_module("text_preserver.access")
+    for name in _READER_SUPPORT_MODULES:
+        _load_reader_support_module(package, name, expected_modules[name])
+
+
+def _load_reader_support_module(package: ModuleType, name: str, expected: str) -> None:
+    path = Path(__file__).parent / "access" / f"{name.rsplit('.', 1)[-1]}.py"
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise ProtocolError(
+                "reader_support_verification",
+                f"reader support module is not a regular file: {name}",
+            )
+        source = path.read_bytes()
+    except OSError as exc:
+        raise ProtocolError(
+            "reader_support_verification",
+            f"cannot read reader support module {name}: {exc}",
+        ) from exc
+    if hashlib.sha256(source).hexdigest() != expected:
+        raise ProtocolError(
+            "reader_support_verification",
+            f"reader support module does not match the expected SHA-256: {name}",
+        )
+    module = ModuleType(name)
+    module.__file__ = str(path)
+    module.__package__ = "text_preserver.access"
+    module.__spec__ = ModuleSpec(name, loader=None, origin=str(path))
+    sys.modules[name] = module
+    try:
+        exec(compile(source, str(path), "exec"), module.__dict__)
+    except Exception as exc:
+        sys.modules.pop(name, None)
+        raise ProtocolError(
+            "reader_support_verification",
+            f"cannot load reader support module {name}: {type(exc).__name__}: {exc}",
+        ) from exc
+    setattr(package, name.rsplit(".", 1)[-1], module)
 
 
 def _apply_controls(limits: dict[str, int], policy: dict[str, Any]) -> dict[str, Any]:

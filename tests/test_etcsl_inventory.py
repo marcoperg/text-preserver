@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -193,7 +194,7 @@ class EtcslInventoryTests(unittest.TestCase):
         )
 
         title = reader._reader_title(root, "1.1.1")
-        page = reader._render_work_page(
+        page, _item, _artifacts, _relations = reader._render_work_page(
             "1.1.1",
             title,
             {"translation": root, "translation_path": "fixture.xml"},
@@ -201,6 +202,8 @@ class EtcslInventoryTests(unittest.TestCase):
             "0" * 64,
             None,
             None,
+            "sources/ota-dataset/mirror/etcsl.zip",
+            "tp:etcsl/artifact/ota-package",
         )
 
         self.assertEqual(unresolved, {"nosuch"})
@@ -219,7 +222,7 @@ class EtcslInventoryTests(unittest.TestCase):
             "fixture.xml",
         )
 
-        page = reader._render_work_page(
+        page, _item, _artifacts, _relations = reader._render_work_page(
             "1.1.1",
             reader._reader_title(root, "1.1.1"),
             {"translation": root, "translation_path": "fixture.xml"},
@@ -227,6 +230,8 @@ class EtcslInventoryTests(unittest.TestCase):
             "0" * 64,
             None,
             None,
+            "sources/ota-dataset/mirror/etcsl.zip",
+            "tp:etcsl/artifact/ota-package",
         )
 
         self.assertEqual(unresolved, set())
@@ -237,6 +242,40 @@ class EtcslInventoryTests(unittest.TestCase):
         self.assertIn("A₂, …", page)
         self.assertIn('role="separator" title="horizontal ruling">―</span>', page)
         self.assertNotIn("&amp;aleph;", page)
+
+    def test_reader_segment_anchors_do_not_collide_with_numbered_labels(self) -> None:
+        root, unresolved = reader._parse_reader_xml(
+            """
+<TEI.2 id="t.1.1.1"><teiHeader><fileDesc><titleStmt>
+<title>Example -- an English prose translation</title>
+</titleStmt></fileDesc></teiHeader><text><body>
+<p n="1">First.</p><p n="1">Second.</p><p n="1-2">Third.</p>
+</body></text></TEI.2>
+""".strip(),
+            "fixture.xml",
+        )
+        page, item, _artifacts, _relations = reader._render_work_page(
+            "1.1.1",
+            "Example",
+            {"translation": root, "translation_path": "fixture.xml"},
+            "20260827T120000Z-a1b2c3",
+            "0" * 64,
+            None,
+            None,
+            "sources/ota-dataset/mirror/etcsl.zip",
+            "tp:etcsl/artifact/ota-package",
+        )
+
+        self.assertEqual(unresolved, set())
+        routes = [
+            segment.route
+            for representation in item.representations
+            for segment in representation.segments
+        ]
+        self.assertEqual(len(routes), len(set(routes)))
+        for route in routes:
+            _path, fragment = route.split("#", 1)
+            self.assertIn(f'id="{fragment}"', page)
 
     def test_reader_handles_translation_without_transliteration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -261,6 +300,38 @@ class EtcslInventoryTests(unittest.TestCase):
             self.assertIn("translation", payload["files"]["index.html"])
             self.assertNotIn(">transliteration</span>", payload["files"]["index.html"])
             self.assertIn("No transliteration is present", page)
+            self.assertIn("Access build incomplete", payload["files"]["index.html"])
+            self.assertIn("Public access does not imply permission", payload["files"]["index.html"])
+            self.assertIn('href="assets/reader.css"', payload["files"]["index.html"])
+            self.assertIn('href="../assets/reader.css"', page)
+            self.assertIn('id="representation-translation"', page)
+            self.assertNotIn("<style", page)
+            self.assertIn(".reader-nav", payload["files"]["assets/reader.css"])
+            self.assertIn(".parallel-text", payload["files"]["assets/etcsl.css"])
+            access = json.loads(payload["files"]["access.json"])
+            self.assertEqual(access["schema_version"], 1)
+            self.assertEqual(access["collection"]["id"], "tp:etcsl/collection")
+            self.assertIn("permission to redistribute", access["collection"]["rights"][0])
+            self.assertEqual(access["items"][0]["route"], "works/1.1.1.html")
+            self.assertEqual(
+                access["items"][0]["representations"][0]["kind"],
+                "translation",
+            )
+            self.assertEqual(
+                access["items"][0]["representations"][0]["segments"][0]["label"],
+                "Paragraph 1",
+            )
+            self.assertIn("Cite this item", page)
+            self.assertIn("tp:etcsl/item/1.1.1", page)
+            self.assertIn("data-access-id=", page)
+            for item in access["items"]:
+                item_page = payload["files"][item["route"]]
+                for representation in item["representations"]:
+                    _path, fragment = representation["route"].split("#", 1)
+                    self.assertIn(f'id="{fragment}"', item_page)
+                    for segment in representation["segments"]:
+                        _path, fragment = segment["route"].split("#", 1)
+                        self.assertIn(f'id="{fragment}"', item_page)
 
     def test_reader_is_incomplete_for_mismatched_root_id(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

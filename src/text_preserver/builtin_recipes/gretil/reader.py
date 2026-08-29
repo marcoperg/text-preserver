@@ -5,11 +5,35 @@ from __future__ import annotations
 import hashlib
 from html import escape as escape_html
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 import xml.etree.ElementTree as ElementTree
 import zipfile
 
 from text_preserver.adapters import ReaderContext, ReaderReport
+from text_preserver.access.reader_model import (
+    AccessArtifact,
+    AccessCollection,
+    AccessItem,
+    AccessRelation,
+    AccessRepresentation,
+    AccessSegment,
+    access_id,
+    access_json,
+    access_segment_json,
+    route_token,
+)
+from text_preserver.access.reader_shell import (
+    ReaderFact,
+    ReaderLink,
+    reader_stylesheet,
+    render_artifact_reference,
+    render_citation,
+    render_document,
+    render_facts,
+    render_navigation,
+    render_notice,
+    render_status,
+)
 
 from .validator import (
     BULK_TEI_MAPPINGS,
@@ -30,8 +54,14 @@ XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
 TEI_NAMESPACE = "http://www.tei-c.org/ns/1.0"
 TEI = {"tei": TEI_NAMESPACE}
 MAX_READER_TEI_SIZE = 64 * 1024 * 1024
+MAX_READER_ACCESS_SEGMENTS = 500_000
+MAX_SEGMENT_INDEX_SIZE = 128 * 1024 * 1024
+SEGMENT_INDEX_ROUTE = "access-segments.jsonl"
 KNOWN_BULK_ONLY_TEI = frozenset({"sa_jayAditya-and-vAmana-kAzikAvRtti"})
 READER_PACKAGE = "1_sanskr.zip"
+COLLECTION_RIGHTS = (
+    "Rights vary by item and representation; preserve embedded notices and do not infer a collection-wide redistribution licence."
+)
 READER_RENDITIONS = frozenset({
     "bold",
     "blue",
@@ -86,18 +116,19 @@ def write_static_reader(
     assets_directory = output_directory / "assets"
     works_directory.mkdir()
     assets_directory.mkdir()
-    (assets_directory / "reader.css").write_text(_reader_stylesheet(), encoding="utf-8")
+    (assets_directory / "reader.css").write_text(reader_stylesheet(), encoding="utf-8")
+    (assets_directory / "gretil.css").write_text(_gretil_stylesheet(), encoding="utf-8")
 
-    routes = {
-        identifier: f"works/{position:04d}.html"
-        for position, identifier in enumerate(expected_ids, start=1)
-    }
     records: list[dict[str, object]] = []
     no_body_ids: list[str] = []
     missing_availability_ids: list[str] = []
     missing_source_ids: list[str] = []
     package_sha256 = _sha256_file(package_path)
-    with zipfile.ZipFile(package_path) as archive:
+    segment_index_path = output_directory / SEGMENT_INDEX_ROUTE
+    with (
+        zipfile.ZipFile(package_path) as archive,
+        segment_index_path.open("w", encoding="utf-8", newline="\n") as segment_index,
+    ):
         members: dict[str, tuple[zipfile.ZipInfo, str, str]] = {}
         for info in archive.infolist():
             match = BULK_TEI_RE.search(info.filename)
@@ -111,16 +142,41 @@ def write_static_reader(
                     BULK_TEI_ROOT_ID_EXCEPTIONS.get(filename_id, filename_id),
                 ),
             )
-            if register_id not in routes:
+            if register_id not in expected_ids:
                 continue
             if register_id in members:
                 raise InventoryError(f"duplicate reader TEI record: {register_id}")
             members[register_id] = (info, filename_id, expected_root_id)
 
-        for position, identifier in enumerate(expected_ids):
-            member = members.get(identifier)
-            if member is None:
-                continue
+        rendered_order = tuple(identifier for identifier in expected_ids if identifier in members)
+        routes = {
+            identifier: f"works/{route_token(identifier)}.html"
+            for identifier in rendered_order
+        }
+        legacy_routes = {
+            identifier: f"works/{position:04d}.html"
+            for position, identifier in enumerate(expected_ids, start=1)
+        }
+        collection_access_id = access_id("gretil", "collection", "")
+        package_artifact_id = access_id("gretil", "artifact", READER_PACKAGE)
+        package_capture_path = package_path.relative_to(capture_directory).as_posix()
+        access_artifacts = [
+            AccessArtifact(
+                package_artifact_id,
+                "GRETIL aggregate TEI package",
+                "preservation_original",
+                package_capture_path,
+                "application/zip",
+                package_sha256,
+            )
+        ]
+        access_items: list[AccessItem] = []
+        relations: list[AccessRelation] = []
+        access_segment_count = 0
+        segment_index_size = 0
+        stable_routes = set(routes.values())
+        for position, identifier in enumerate(rendered_order):
+            member = members[identifier]
             info, filename_id, expected_root_id = member
             if info.file_size > MAX_READER_TEI_SIZE:
                 raise InventoryError(
@@ -135,6 +191,7 @@ def write_static_reader(
                 raise InventoryError(f"reader TEI identity does not match: {info.filename}")
             record = _reader_record(root, identifier, filename_id, info.filename, routes[identifier])
             records.append(record)
+            text = root.find("./tei:text", TEI)
             body = root.find("./tei:text/tei:body", TEI)
             if body is None or not any((value or "").strip() for value in body.itertext()):
                 no_body_ids.append(identifier)
@@ -144,14 +201,73 @@ def write_static_reader(
             )
             if availability is None:
                 missing_availability_ids.append(identifier)
+            item_rights = _access_rights(availability)
             source_description = root.find(
                 "./tei:teiHeader/tei:fileDesc/tei:sourceDesc",
                 TEI,
             )
             if source_description is None:
                 missing_source_ids.append(identifier)
-            previous_id = expected_ids[position - 1] if position else None
-            next_id = expected_ids[position + 1] if position + 1 < len(expected_ids) else None
+            previous_id = rendered_order[position - 1] if position else None
+            next_id = (
+                rendered_order[position + 1]
+                if position + 1 < len(rendered_order)
+                else None
+            )
+            item_id = access_id("gretil", "item", identifier)
+            representation_id = access_id("gretil", "representation", f"{identifier}/tei")
+            member_artifact_id = access_id("gretil", "artifact", info.filename)
+            segments, segment_anchors = _access_segments(text, identifier, routes[identifier])
+            access_segment_count += len(segments)
+            if access_segment_count > MAX_READER_ACCESS_SEGMENTS:
+                raise InventoryError(
+                    f"reader access model exceeds {MAX_READER_ACCESS_SEGMENTS} segments"
+                )
+            for segment in segments:
+                line = access_segment_json(representation_id, segment)
+                segment_index_size += len(line.encode("utf-8"))
+                if segment_index_size > MAX_SEGMENT_INDEX_SIZE:
+                    raise InventoryError(
+                        f"reader segment index exceeds {MAX_SEGMENT_INDEX_SIZE} bytes"
+                    )
+                segment_index.write(line)
+            citation_text = (
+                f'GRETIL {identifier}, {record["title"]}. '
+                f"Derived from capture {capture_directory.name}."
+            )
+            access_artifacts.append(
+                AccessArtifact(
+                    member_artifact_id,
+                    f"GRETIL TEI source for {identifier}",
+                    "preservation_original",
+                    package_capture_path,
+                    "application/tei+xml",
+                    container_id=package_artifact_id,
+                    member_path=info.filename,
+                )
+            )
+            access_items.append(
+                AccessItem(
+                    item_id,
+                    str(record["title"]),
+                    "text",
+                    routes[identifier],
+                    citation_text,
+                    (
+                        AccessRepresentation(
+                            representation_id,
+                            "TEI text",
+                            "tei",
+                            str(record["primary_language"]),
+                            f'{routes[identifier]}#representation-tei',
+                            (member_artifact_id,),
+                            segment_index=SEGMENT_INDEX_ROUTE,
+                        ),
+                    ),
+                    item_rights,
+                )
+            )
+            relations.append(AccessRelation(item_id, "part_of", collection_access_id))
             page = _render_reader_work(
                 root,
                 record,
@@ -161,8 +277,20 @@ def write_static_reader(
                 routes.get(next_id) if next_id else None,
                 previous_id,
                 next_id,
+                item_id,
+                member_artifact_id,
+                citation_text,
+                segment_anchors,
             )
             (output_directory / routes[identifier]).write_text(page, encoding="utf-8")
+            legacy_route = legacy_routes[identifier]
+            if legacy_route != routes[identifier]:
+                if legacy_route in stable_routes:
+                    raise InventoryError(f"legacy reader route collides: {legacy_route}")
+                (output_directory / legacy_route).write_text(
+                    _render_legacy_route(identifier, routes[identifier]),
+                    encoding="utf-8",
+                )
 
     rendered_ids = {str(record["identifier"]) for record in records}
     missing_rendered = sorted(set(expected_ids) - rendered_ids)
@@ -189,21 +317,6 @@ def write_static_reader(
         warnings.append(
             f"{len(unexpected_extra_ids)} unexpected TEI records occur in the reader package"
         )
-
-    (output_directory / "index.html").write_text(
-        _render_reader_index(records, capture_directory.name, package_sha256),
-        encoding="utf-8",
-    )
-    (output_directory / "about.html").write_text(
-        _render_reader_about(
-            capture_directory.name,
-            package_sha256,
-            package_report,
-            extra_ids,
-            warnings,
-        ),
-        encoding="utf-8",
-    )
     complete = (
         len(records) == expected_work_count
         and not missing_ids
@@ -213,8 +326,48 @@ def write_static_reader(
         and not missing_source_ids
         and bool(package_report["crc_ok"])
     )
+    status = "complete_with_warnings" if complete else "incomplete"
+
+    (output_directory / "index.html").write_text(
+        _render_reader_index(
+            records,
+            capture_directory.name,
+            package_sha256,
+            status,
+            warnings,
+            package_artifact_id,
+        ),
+        encoding="utf-8",
+    )
+    (output_directory / "about.html").write_text(
+        _render_reader_about(
+            capture_directory.name,
+            package_sha256,
+            package_report,
+            extra_ids,
+            status,
+            warnings,
+            package_artifact_id,
+        ),
+        encoding="utf-8",
+    )
+    (output_directory / "access.json").write_text(
+        access_json(
+            AccessCollection(
+                collection_access_id,
+                "GRETIL",
+                status,
+                "index.html",
+                tuple(access_items),
+                tuple(access_artifacts),
+                tuple(relations),
+                (COLLECTION_RIGHTS,),
+            )
+        ),
+        encoding="utf-8",
+    )
     return {
-        "status": "complete_with_warnings" if complete else "incomplete",
+        "status": status,
         "summary": {
             "work_count": len(records),
             "full_text_work_count": len(records) - len(no_body_ids),
@@ -310,10 +463,66 @@ def _reader_record(
     }
 
 
+def _access_segments(
+    text: ElementTree.Element | None,
+    identifier: str,
+    route: str,
+) -> tuple[tuple[AccessSegment, ...], dict[int, str]]:
+    if text is None:
+        return (), {}
+    values: list[AccessSegment] = []
+    anchors: dict[int, str] = {}
+    occurrences: dict[str, int] = {}
+    for element in text.iter():
+        source_id = element.get(XML_ID)
+        if not source_id:
+            continue
+        if len(values) >= MAX_READER_ACCESS_SEGMENTS:
+            raise InventoryError(
+                f"reader access model exceeds {MAX_READER_ACCESS_SEGMENTS} segments in {identifier}"
+            )
+        occurrence = occurrences.get(source_id, 0) + 1
+        occurrences[source_id] = occurrence
+        anchor = f"segment-{route_token(source_id)}--occurrence-{occurrence}"
+        anchors[id(element)] = anchor
+        values.append(
+            AccessSegment(
+                access_id(
+                    "gretil",
+                    "segment",
+                    f"{identifier}/{source_id}/{occurrence}",
+                ),
+                source_id,
+                f"{route}#{anchor}",
+            )
+        )
+    return tuple(values), anchors
+
+
+def _render_legacy_route(identifier: str, route: str) -> str:
+    target = Path(route).name
+    return render_document(
+        f"GRETIL {identifier}",
+        f"""
+{render_navigation((ReaderLink("GRETIL catalogue", "../index.html"),))}
+<main class="reader-main about">
+  <h1>Reader route updated</h1>
+  <p>This preserved positional route now has a stable identifier-based address.</p>
+  <p><a href="{escape_html(target, quote=True)}">Open {escape_html(identifier)}</a></p>
+</main>
+""",
+        asset_prefix="../",
+        collection_stylesheet="gretil.css",
+    )
+
+
 def _render_reader_index(
     records: Sequence[dict[str, object]],
     capture_id: str,
     package_sha256: str,
+    status: str,
+    warnings: Sequence[str],
+    package_artifact_id: str,
 ) -> str:
     groups: dict[str, list[dict[str, object]]] = {}
     for record in records:
@@ -340,25 +549,26 @@ def _render_reader_index(
             f'<section class="language-group"><h2>{escape_html(language)}</h2>'
             f'<ol>{"".join(entries)}</ol></section>'
         )
-    return _reader_document(
+    return render_document(
         "GRETIL Reader",
         f"""
-<header class="masthead">
-  <p class="eyebrow">Verified local access copy</p>
+<header class="reader-header">
+  <p class="reader-eyebrow">Verified local access copy</p>
   <h1>GRETIL</h1>
-  <p class="lede">{len(records)} electronic texts in Indian languages, rendered from the
+  <p class="reader-lede">{len(records)} electronic texts in Indian languages, rendered from the
   publisher's preserved TEI package without changing the archive master.</p>
 </header>
-<main>
-  <nav class="utility"><a href="about.html">About this derived reader</a>
-  <span>Capture <code>{escape_html(capture_id)}</code></span></nav>
-  <aside class="notice">Rights and attribution vary by text. Open a record to review its
-  preserved availability statement and source description.</aside>
+{render_navigation((ReaderLink("About this derived reader", "about.html"),))}
+<main class="reader-main">
+  {render_notice(COLLECTION_RIGHTS)}
+  {render_status(status, warnings)}
+  <p class="catalogue-meta">Capture <code>{escape_html(capture_id)}</code></p>
   {''.join(sections)}
 </main>
-<footer>Aggregate package SHA-256 <code>{escape_html(package_sha256)}</code></footer>
+<footer class="reader-footer">Aggregate package SHA-256 <code>{escape_html(package_sha256)}</code>
+{render_artifact_reference("Machine-readable source artifact", package_artifact_id, "access.json")}</footer>
 """,
-        "",
+        collection_stylesheet="gretil.css",
     )
 
 
@@ -371,18 +581,24 @@ def _render_reader_work(
     next_route: str | None,
     previous_id: str | None,
     next_id: str | None,
+    item_id: str,
+    member_artifact_id: str,
+    citation_text: str,
+    segment_anchors: Mapping[int, str],
 ) -> str:
-    navigation = ['<a href="../index.html">Catalogue</a>']
-    if previous_route and previous_id:
-        navigation.append(
-            f'<a href="../{escape_html(previous_route, quote=True)}">&larr; '
-            f'{escape_html(previous_id)}</a>'
-        )
-    if next_route and next_id:
-        navigation.append(
-            f'<a href="../{escape_html(next_route, quote=True)}">'
-            f'{escape_html(next_id)} &rarr;</a>'
-        )
+    navigation = render_navigation(
+        (ReaderLink("GRETIL catalogue", "../index.html"),),
+        previous=(
+            ReaderLink(previous_id, f"../{previous_route}")
+            if previous_route and previous_id
+            else None
+        ),
+        next_=(
+            ReaderLink(next_id, f"../{next_route}")
+            if next_route and next_id
+            else None
+        ),
+    )
     authors = "; ".join(str(value) for value in record["authors"])
     language_values = [
         f"{code} ({label})" if code and label and code != label else code or label
@@ -395,7 +611,7 @@ def _render_reader_work(
     responsibilities = root.findall("./tei:teiHeader/tei:fileDesc/tei:titleStmt/tei:respStmt", TEI)
     text = root.find("./tei:text", TEI)
     text_html = (
-        _render_tei_element(text)
+        _render_tei_element(text, segment_anchors=segment_anchors)
         if text is not None
         else '<p class="unavailable">No text element is present in this TEI record.</p>'
     )
@@ -405,40 +621,48 @@ def _render_reader_work(
         _reader_details("Editorial and conversion notes", notes),
     ]
     if responsibilities:
-        responsibility_html = "".join(_render_tei_element(item) for item in responsibilities)
+        responsibility_html = "".join(
+            _render_tei_element(item, emit_segment_anchors=False)
+            for item in responsibilities
+        )
         metadata_sections.insert(
             1,
             f'<details><summary>Responsibilities</summary><div class="metadata-text">'
             f"{responsibility_html}</div></details>",
         )
-    provenance = (
-        f'<dl class="provenance"><dt>Register ID</dt><dd><code>{escape_html(str(record["identifier"]))}</code></dd>'
-        f'<dt>Filename ID</dt><dd><code>{escape_html(str(record["filename_id"]))}</code></dd>'
-        f'<dt>TEI root ID</dt><dd><code>{escape_html(str(record["root_id"]))}</code></dd>'
-        f'<dt>ZIP member</dt><dd><code>{escape_html(str(record["member_path"]))}</code></dd>'
-        f'<dt>Capture</dt><dd><code>{escape_html(capture_id)}</code></dd></dl>'
+    provenance = render_facts(
+        (
+            ReaderFact("Register ID", str(record["identifier"])),
+            ReaderFact("Filename ID", str(record["filename_id"])),
+            ReaderFact("TEI root ID", str(record["root_id"])),
+            ReaderFact("ZIP member", str(record["member_path"])),
+            ReaderFact("Capture", capture_id),
+        )
     )
-    return _reader_document(
+    citation = render_citation(citation_text, item_id)
+    return render_document(
         f'{record["identifier"]} - {record["title"]}',
         f"""
-<nav class="work-nav">{' '.join(navigation)}</nav>
-<header class="record-header">
-  <p class="eyebrow">{escape_html(str(record["identifier"]))}</p>
+{navigation}
+<header class="reader-header">
+  <p class="reader-eyebrow">{escape_html(str(record["identifier"]))}</p>
   <h1>{escape_html(str(record["title"]))}</h1>
   {f'<p class="byline">{escape_html(authors)}</p>' if authors else ''}
   <p class="record-meta">{escape_html(' / '.join(language_values))}</p>
   {f'<p class="terms">{escape_html(terms)}</p>' if terms else ''}
 </header>
-<main class="work-layout">
+<main class="reader-main work-layout">
   <aside class="record-sidebar">
     {provenance}
+    {render_artifact_reference("Source artifact", member_artifact_id, "../access.json")}
     {''.join(value for value in metadata_sections if value)}
   </aside>
-  <article class="tei-text">{text_html}</article>
+  <article id="representation-tei" class="tei-text">{text_html}{citation}</article>
 </main>
-<footer>Preserved aggregate package SHA-256 <code>{escape_html(package_sha256)}</code></footer>
+<footer class="reader-footer">Preserved aggregate package SHA-256 <code>{escape_html(package_sha256)}</code></footer>
 """,
-        "../",
+        asset_prefix="../",
+        collection_stylesheet="gretil.css",
     )
 
 
@@ -454,8 +678,25 @@ def _reader_details(
     attributes = _tei_attribute_annotations(element, ("status", "type"))
     return (
         f"<details{opened}><summary>{escape_html(label)}</summary>"
-        f'<div class="metadata-text">{attributes}{_render_tei_content(element)}</div></details>'
+        f'<div class="metadata-text">{attributes}'
+        f'{_render_tei_content(element, emit_segment_anchors=False)}</div></details>'
     )
+
+
+def _access_rights(element: ElementTree.Element | None) -> tuple[str, ...]:
+    if element is None:
+        return ()
+    values: list[str] = []
+    text = _metadata_text(element)
+    if text:
+        values.append(text)
+    for name in ("status", "type"):
+        if value := (element.get(name) or "").strip():
+            values.append(f"{name}: {value}")
+    for licence in element.findall(".//tei:licence", TEI):
+        if target := (licence.get("target") or "").strip():
+            values.append(f"licence target: {target}")
+    return tuple(dict.fromkeys(values))
 
 
 def _render_reader_about(
@@ -463,31 +704,41 @@ def _render_reader_about(
     package_sha256: str,
     package_report: dict[str, object],
     extra_ids: Sequence[str],
+    status: str,
     warnings: Sequence[str],
+    package_artifact_id: str,
 ) -> str:
     warning_items = "".join(f"<li>{escape_html(value)}</li>" for value in warnings)
     extra_items = "".join(f"<li><code>{escape_html(value)}</code></li>" for value in extra_ids)
-    return _reader_document(
+    provenance = render_facts(
+        (
+            ReaderFact("Capture", capture_id),
+            ReaderFact("Package SHA-256", package_sha256),
+            ReaderFact("ZIP entries", str(package_report["entry_count"])),
+            ReaderFact("Expanded bytes checked", str(package_report["uncompressed_size"])),
+            ReaderFact("CRC check", "passed" if package_report["crc_ok"] else "failed"),
+        )
+    )
+    return render_document(
         "About the GRETIL Reader",
         f"""
-<nav class="work-nav"><a href="index.html">Catalogue</a></nav>
-<header class="record-header"><p class="eyebrow">Derived access copy</p>
+{render_navigation((ReaderLink("GRETIL catalogue", "index.html"),))}
+<header class="reader-header"><p class="reader-eyebrow">Derived access copy</p>
 <h1>About this reader</h1></header>
-<main class="about">
+<main class="reader-main about">
   <p>This static reader was generated locally from <code>{READER_PACKAGE}</code> in capture
   <code>{escape_html(capture_id)}</code>. The preserved ZIP remains authoritative.</p>
-  <dl class="provenance"><dt>Package SHA-256</dt><dd><code>{escape_html(package_sha256)}</code></dd>
-  <dt>ZIP entries</dt><dd>{package_report["entry_count"]}</dd>
-  <dt>Expanded bytes checked</dt><dd>{package_report["uncompressed_size"]}</dd>
-  <dt>CRC check</dt><dd>{'passed' if package_report["crc_ok"] else 'failed'}</dd></dl>
+  {provenance}
+  {render_status(status, warnings)}
   <h2>Interpretive limits</h2><ul>{warning_items}</ul>
   {f'<h2>Bulk-only records not in the reviewed catalogue</h2><ul>{extra_items}</ul>' if extra_items else ''}
   <p>The reader escapes source text, loads no scripts or remote resources, does not resolve
   external TEI references, and does not alter or extract files into the preservation capture.</p>
 </main>
-<footer>GRETIL local preservation reader</footer>
+<footer class="reader-footer">GRETIL local preservation reader
+{render_artifact_reference("Machine-readable source artifact", package_artifact_id, "access.json")}</footer>
 """,
-        "",
+        collection_stylesheet="gretil.css",
     )
 
 
@@ -503,10 +754,19 @@ def _render_tei_content(
     element: ElementTree.Element,
     *,
     inline_blocks: bool = False,
+    segment_anchors: Mapping[int, str] | None = None,
+    emit_segment_anchors: bool = True,
 ) -> str:
     parts = [_render_tei_text(element.text)]
     for child in element:
-        parts.append(_render_tei_element(child, inline_blocks=inline_blocks))
+        parts.append(
+            _render_tei_element(
+                child,
+                inline_blocks=inline_blocks,
+                segment_anchors=segment_anchors,
+                emit_segment_anchors=emit_segment_anchors,
+            )
+        )
         parts.append(_render_tei_text(child.tail))
     return "".join(parts)
 
@@ -523,11 +783,32 @@ def _render_tei_element(
     element: ElementTree.Element,
     *,
     inline_blocks: bool = False,
+    segment_anchors: Mapping[int, str] | None = None,
+    emit_segment_anchors: bool = True,
 ) -> str:
     name = _local_name(element.tag)
     number = element.get("n") or ""
     number_html = escape_html(number)
-    content = _render_tei_content(element, inline_blocks=inline_blocks)
+    content = _render_tei_content(
+        element,
+        inline_blocks=inline_blocks,
+        segment_anchors=segment_anchors,
+        emit_segment_anchors=emit_segment_anchors,
+    )
+    source_id = element.get(XML_ID)
+    source_anchor = ""
+    if source_id and emit_segment_anchors:
+        anchor = (
+            segment_anchors.get(id(element))
+            if segment_anchors is not None
+            else f"segment-{route_token(source_id)}--occurrence-1"
+        )
+        if anchor is None:
+            raise InventoryError(f"missing reader segment anchor: {source_id}")
+        source_anchor = (
+            f'<span id="{anchor}" class="segment-anchor"></span>'
+        )
+        content = f"{source_anchor}{content}"
     provenance_names: tuple[str, ...] = (XML_ID, "resp", "corresp", "source", "edRef")
     if name not in {"graphic", "licence", "ptr", "ref"}:
         provenance_names += ("target",)
@@ -651,7 +932,12 @@ def _render_tei_element(
     if name == "quote":
         return f'<blockquote class="tei-quote{source_classes}"{source_attributes}>{content}</blockquote>'
     if name == "note":
-        note_content = _render_tei_content(element, inline_blocks=True)
+        note_content = source_anchor + _render_tei_content(
+            element,
+            inline_blocks=True,
+            segment_anchors=segment_anchors,
+            emit_segment_anchors=emit_segment_anchors,
+        )
         note_content += _tei_attribute_annotations(element, provenance_names)
         return f'<span class="note{source_classes}"{source_attributes}>[note: {note_content}]</span>'
     if name == "app":
@@ -757,69 +1043,51 @@ def _source_values(label: str, values: Sequence[str]) -> str:
     )
 
 
-def _reader_document(title: str, content: str, asset_prefix: str) -> str:
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'">
-<title>{escape_html(title)}</title>
-<link rel="stylesheet" href="{asset_prefix}assets/reader.css">
-</head>
-<body>{content}</body>
-</html>
-"""
-
-
-def _reader_stylesheet() -> str:
-    return """:root{color-scheme:light;--ink:#211d17;--muted:#70685d;--paper:#eee9dc;
---sheet:#fffdf6;--rule:#c8bea9;--saffron:#a9491c;--indigo:#243f58;--note:#f2e2b9}
-*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;color:var(--ink);
-background:linear-gradient(90deg,#e3ddce 0,transparent 12%,transparent 88%,#e3ddce 100%),var(--paper);
-font:17px/1.65 Georgia,"Times New Roman",serif}a{color:var(--indigo);text-underline-offset:.16em}
-code,.record-id,.line-number,.line-ref{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-code{overflow-wrap:anywhere}.masthead,.record-header{padding:4rem max(5vw,1.2rem) 2.6rem;
-border-bottom:1px solid var(--rule);background:var(--sheet)}h1,h2,h3{line-height:1.12;font-weight:600}
-h1{max-width:25ch;margin:.15rem 0;font-size:clamp(2.4rem,6vw,5.4rem)}.eyebrow{margin:0;
-color:var(--saffron);font:700 .74rem/1.2 ui-monospace,monospace;letter-spacing:.15em;text-transform:uppercase}
-.lede{max-width:62ch;color:var(--muted);font-size:1.16rem}.utility,.work-nav{display:flex;flex-wrap:wrap;
-gap:1rem 2rem;padding:1rem max(5vw,1.2rem);border-bottom:1px solid var(--rule);background:#faf6ea}
-main,footer{width:min(1160px,92vw);margin:2rem auto}.notice{padding:1rem 1.2rem;border-left:4px solid var(--saffron);
-background:var(--sheet)}.language-group{margin:3rem 0}.language-group>h2{padding-bottom:.5rem;border-bottom:3px double var(--rule)}
-.language-group ol{list-style:none;padding:0}.language-group li{display:grid;grid-template-columns:minmax(0,1fr) auto;
-gap:1rem;padding:.8rem 0;border-bottom:1px solid var(--rule)}.language-group a{display:grid;
-grid-template-columns:minmax(11rem,18rem) minmax(0,1fr);gap:.75rem;text-decoration:none}.record-id{color:var(--saffron);
-font-size:.78rem;overflow-wrap:anywhere}.author,.terms{display:block;color:var(--muted);font-size:.84rem}.terms{align-self:center}
-.byline{font-size:1.2rem}.record-meta{color:var(--muted)}.work-layout{display:grid;grid-template-columns:minmax(16rem,25rem) minmax(0,1fr);
-gap:2rem;align-items:start}.record-sidebar{position:sticky;top:1rem;max-height:calc(100vh - 2rem);overflow:auto;
-padding:1.2rem;border:1px solid var(--rule);background:#f8f3e6;font-size:.85rem}.provenance{display:grid;
-grid-template-columns:max-content minmax(0,1fr);gap:.35rem .8rem}.provenance dt{font-weight:700}.provenance dd{margin:0}
-details{margin:1rem 0;border-top:1px solid var(--rule);padding-top:.65rem}summary{cursor:pointer;font-weight:700}
-.metadata-text{margin-top:.7rem}.tei-text{min-width:0;padding:clamp(1rem,3vw,2.5rem);border:1px solid var(--rule);
-background:var(--sheet);box-shadow:0 1rem 2.5rem #51462c18}.division+.division{margin-top:2.5rem}.division-label,.line-group-label{
-color:var(--saffron);font-size:.78rem;text-transform:uppercase;letter-spacing:.08em}.paragraph{margin:1rem 0}
-.line-group{margin:1.4rem 0}.line{display:grid;grid-template-columns:4.5rem minmax(0,1fr);gap:.8rem;margin:.22rem 0}
-.line-number{color:var(--muted);font-size:.72rem;text-align:right}.line-ref{color:var(--muted);font-size:.65rem}
-.page-break{display:block;margin:1.4rem 0 .5rem;color:var(--muted);font-size:.72rem}.note{background:var(--note);font-size:.88em}
-.gap,.milestone{color:var(--saffron)}.reference{border-bottom:1px dotted var(--muted)}.apparatus{border-bottom:1px dashed var(--saffron)}
-.lem:before{content:"lem. ";color:var(--muted);font-size:.72rem}.rdg:before{content:" rdg. ";color:var(--muted);font-size:.72rem}
-.rdg small,.lem small{margin-left:.3rem;color:var(--muted)}.tei-foreign,.tei-emph,.rend-it,.rend-italic{font-style:italic}
-.rend-bold{font-weight:700}.rend-underline{text-decoration:underline}.rend-red{color:#8d241c}.rend-blue{color:#1c4d78}
-.rend-green{color:#35653a}.rend-center{text-align:center}.rend-small{font-size:.85em}.rend-sup{vertical-align:super;font-size:.75em}
-.rend-sub{vertical-align:sub;font-size:.75em}.tei-supplied:before{content:"["}.tei-supplied:after{content:"]"}
-.tei-unclear{text-decoration:underline dotted}.tei-del,.tei-surplus{text-decoration:line-through}.tei-orig,.tei-sic{color:#6d4226}
-.has-source-rendition:after{content:" [rend: " attr(data-tei-rend) "]";color:var(--muted);font:normal .68rem/1.3 ui-monospace,monospace}
-.tei-inline-block{display:block;margin:.35rem 0}
-.tei-table{border-collapse:collapse;max-width:100%;overflow:auto}.tei-table td{padding:.35rem;border:1px solid var(--rule)}
-.tei-bibl,.tei-biblStruct,.tei-cit{margin:.7rem 0;padding-left:1rem;border-left:2px solid var(--rule)}
-.source-target{display:inline-block;margin-left:.35rem;color:var(--muted);font:normal .72rem/1.4 ui-monospace,monospace}
-.tei-unknown{outline:1px dotted transparent}.speaker{display:block;margin-top:1rem}.about{max-width:780px}
-blockquote{margin:1rem 2rem;padding-left:1rem;border-left:3px solid var(--rule)}footer{padding:1rem 0 3rem;border-top:1px solid var(--rule);
-color:var(--muted);font-size:.76rem}@media(max-width:850px){.work-layout{grid-template-columns:1fr}.record-sidebar{position:static;max-height:none}
-.language-group li,.language-group a{grid-template-columns:1fr}.line{grid-template-columns:3rem minmax(0,1fr)}}
-@media print{body{background:#fff}.work-nav,.record-sidebar{display:none}.work-layout{display:block}.tei-text{border:0;box-shadow:none;padding:0}}
+def _gretil_stylesheet() -> str:
+    return """:root{--reader-accent:#a9491c;--reader-link:#243f58;--note:#f2e2b9}
+body{background:linear-gradient(90deg,#e3ddce 0,transparent 12%,transparent 88%,#e3ddce 100%),
+var(--reader-paper)}.catalogue-meta{color:var(--reader-muted)}.language-group{margin:3rem 0}
+.language-group>h2{padding-bottom:.5rem;border-bottom:3px double var(--reader-rule)}.language-group ol{
+list-style:none;padding:0}.language-group li{display:grid;grid-template-columns:minmax(0,1fr) auto;
+gap:1rem;padding:.8rem 0;border-bottom:1px solid var(--reader-rule)}.language-group a{display:grid;
+grid-template-columns:minmax(11rem,18rem) minmax(0,1fr);gap:.75rem;text-decoration:none}
+.record-id,.line-number,.line-ref{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.record-id{color:var(--reader-accent);font-size:.78rem;overflow-wrap:anywhere}.author,.terms{
+display:block;color:var(--reader-muted);font-size:.84rem}.terms{align-self:center}.byline{font-size:1.2rem}
+.record-meta{color:var(--reader-muted)}.work-layout{display:grid;grid-template-columns:
+minmax(16rem,25rem) minmax(0,1fr);gap:2rem;align-items:start}.record-sidebar{position:sticky;
+top:1rem;max-height:calc(100vh - 2rem);overflow:auto;padding:1.2rem;border:1px solid
+var(--reader-rule);background:#f8f3e6;font-size:.85rem}.record-sidebar details{margin:1rem 0;
+border-top:1px solid var(--reader-rule);padding-top:.65rem}summary{cursor:pointer;font-weight:700}
+.metadata-text{margin-top:.7rem}.tei-text{min-width:0;padding:clamp(1rem,3vw,2.5rem);
+border:1px solid var(--reader-rule);background:var(--reader-sheet);box-shadow:0 1rem 2.5rem #51462c18}
+.division+.division{margin-top:2.5rem}.division-label,.line-group-label{color:var(--reader-accent);
+font-size:.78rem;text-transform:uppercase;letter-spacing:.08em}.paragraph{margin:1rem 0}.line-group{
+margin:1.4rem 0}.line{display:grid;grid-template-columns:4.5rem minmax(0,1fr);gap:.8rem;
+margin:.22rem 0}.line-number{color:var(--reader-muted);font-size:.72rem;text-align:right}.line-ref{
+color:var(--reader-muted);font-size:.65rem}.page-break{display:block;margin:1.4rem 0 .5rem;
+color:var(--reader-muted);font-size:.72rem}.note{background:var(--note);font-size:.88em}.gap,
+.milestone{color:var(--reader-accent)}.reference{border-bottom:1px dotted var(--reader-muted)}
+.apparatus{border-bottom:1px dashed var(--reader-accent)}.lem:before{content:"lem. ";
+color:var(--reader-muted);font-size:.72rem}.rdg:before{content:" rdg. ";color:var(--reader-muted);
+font-size:.72rem}.rdg small,.lem small{margin-left:.3rem;color:var(--reader-muted)}.tei-foreign,
+.tei-emph,.rend-it,.rend-italic{font-style:italic}.rend-bold{font-weight:700}.rend-underline{
+text-decoration:underline}.rend-red{color:#8d241c}.rend-blue{color:#1c4d78}.rend-green{color:#35653a}
+.rend-center{text-align:center}.rend-small{font-size:.85em}.rend-sup{vertical-align:super;font-size:.75em}
+.rend-sub{vertical-align:sub;font-size:.75em}.tei-supplied:before{content:"["}.tei-supplied:after{
+content:"]"}.tei-unclear{text-decoration:underline dotted}.tei-del,.tei-surplus{text-decoration:line-through}
+.tei-orig,.tei-sic{color:#6d4226}.has-source-rendition:after{content:" [rend: " attr(data-tei-rend) "]";
+color:var(--reader-muted);font:normal .68rem/1.3 ui-monospace,monospace}.tei-inline-block{
+display:block;margin:.35rem 0}.tei-table{border-collapse:collapse;max-width:100%;overflow:auto}
+.tei-table td{padding:.35rem;border:1px solid var(--reader-rule)}.tei-bibl,.tei-biblStruct,.tei-cit{
+margin:.7rem 0;padding-left:1rem;border-left:2px solid var(--reader-rule)}.source-target{
+display:inline-block;margin-left:.35rem;color:var(--reader-muted);font:normal .72rem/1.4
+ui-monospace,monospace}.tei-unknown{outline:1px dotted transparent}.speaker{display:block;
+margin-top:1rem}.about{max-width:780px}blockquote{margin:1rem 2rem;padding-left:1rem;
+border-left:3px solid var(--reader-rule)}@media(max-width:850px){.work-layout{grid-template-columns:1fr}
+.record-sidebar{position:static;max-height:none}.language-group li,.language-group a{
+grid-template-columns:1fr}.line{grid-template-columns:3rem minmax(0,1fr)}}@media print{
+.record-sidebar{display:none}.work-layout{display:block}.tei-text{border:0;box-shadow:none;padding:0}}
 """
 
 

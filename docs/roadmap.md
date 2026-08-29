@@ -168,10 +168,15 @@ file enumeration without invalidating captured version-1 recipes.
 
 ## Phase 4: build the unified access reader
 
-**Status:** Planned; collection-specific readers already exist
+**Status:** In progress; shared shell and initial typed access model implemented for ETCSL/GRETIL
 
 **Purpose:** Give every collection a consistent local access experience without
 forcing different source formats into one scholarly hierarchy.
+
+The shared reader is a library of contracts and composable components, not one
+mandatory page template. Recipes retain collection-specific layouts, terminology,
+text structures, and visual extensions while reusing the inert document envelope,
+navigation, status, provenance, and asset foundations.
 
 **Deliverables**
 
@@ -189,7 +194,7 @@ forcing different source formats into one scholarly hierarchy.
 
 **Exit criteria**
 
-- ETCSL and GRETIL use the same shell, visual language, navigation, status panels, and citation behavior.
+- ETCSL and GRETIL use the same shell primitives and navigational conventions while retaining collection-specific layouts and visual extensions.
 - Collection-specific pages retain their distinct scholarly structures.
 - Readers work without JavaScript or network access and remain usable in EWW and normal browsers.
 - Deleting the reader and search index does not affect archive verification or validation.

@@ -17,11 +17,14 @@ import tempfile
 from typing import Any, Iterator, Mapping, NoReturn
 
 from text_preserver.adapter_process import (
+    AdapterLimits,
     adapter_digest,
     execution_policy_identity,
     invoke_adapter,
 )
 from text_preserver.adapters import _adapter_bundle_root, _adapter_path
+from text_preserver.access.reader_model import reader_model_identity, validate_access_indexes
+from text_preserver.access.reader_shell import reader_shell_identity
 from text_preserver.preservation.capture.plan import CAPTURE_ID_RE
 from text_preserver.config import SAFE_ID_RE, CollectionConfig, Config
 from text_preserver.derived import (
@@ -129,7 +132,16 @@ def build_static_reader(
         renderer_sha256 = adapter_digest(adapter_path)
     except (OSError, ValueError) as exc:
         raise AnalysisError(f"cannot verify reader adapter {adapter_path}: {exc}") from exc
-    execution_policy = execution_policy_identity("reader")
+    adapter_limits = AdapterLimits(wall_seconds=120.0)
+    execution_policy = execution_policy_identity("reader", adapter_limits)
+    reader_support = (
+        {
+            "text_preserver.access.reader_model": dict(reader_model_identity()),
+            "text_preserver.access.reader_shell": dict(reader_shell_identity()),
+        }
+        if runtime_recipe_api == 2
+        else None
+    )
     build_inputs: dict[str, Any] = {
         "schema_version": READER_SCHEMA_VERSION,
         "collection_id": collection.id,
@@ -146,6 +158,8 @@ def build_static_reader(
         "expected_work_count": expected_work_count,
         "execution_policy": execution_policy,
     }
+    if reader_support is not None:
+        build_inputs["reader_support"] = reader_support
     build_key = hashlib.sha256(_canonical_json(build_inputs)).hexdigest()
     relative_parent = Path("collections") / collection.id / "captures" / capture_id
     parent = _ensure_derived_directory(config.project.derived_root, relative_parent)
@@ -179,6 +193,15 @@ def build_static_reader(
                 else None
             ),
             bundle_paths=recipe_bundle_identity.get("files"),
+            reader_support=(
+                {
+                    name: str(identity["sha256"])
+                    for name, identity in reader_support.items()
+                }
+                if reader_support is not None
+                else None
+            ),
+            limits=adapter_limits,
         )
         if not outcome.ok:
             assert outcome.error is not None
@@ -194,6 +217,11 @@ def build_static_reader(
         else:
             summary, warnings, status = _validate_streamed_reader_payload(payload, adapter_path)
 
+        if runtime_recipe_api == 2:
+            try:
+                validate_access_indexes(staging)
+            except ValueError as exc:
+                raise AnalysisError(f"reader access model is invalid: {exc}") from exc
         output_tree = _validate_streamed_reader_tree(staging)
         summary["output_file_count"] = output_tree["file_count"]
         summary["output_bytes"] = output_tree["total_bytes"]
@@ -224,6 +252,7 @@ def build_static_reader(
                 "entry_point": entry_point,
             },
             "execution_policy": execution_policy,
+            "reader_support": build_inputs.get("reader_support"),
             "adapter_controls": adapter_controls,
             "build_key": build_key,
             "build_inputs": build_inputs,

@@ -32,13 +32,17 @@ from text_preserver.preservation.recipe_bundle import (
 
 
 PROTOCOL_NAME = "text-preserver.adapter"
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 EXECUTION_POLICY_VERSION = 1
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 _OPERATION_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _MAX_OUTPUT_FILES = 2_000
 _MAX_OUTPUT_DIRECTORIES = 2_000
 _MAX_OUTPUT_BYTES = 512 * 1024 * 1024
+_READER_SUPPORT_MODULES = {
+    "text_preserver.access.reader_model",
+    "text_preserver.access.reader_shell",
+}
 
 
 class AdapterProcessError(ValueError):
@@ -165,8 +169,9 @@ def invoke_adapter(
     bundle_root: str | Path | None = None,
     bundle_sha256: str | None = None,
     bundle_paths: Sequence[str] | None = None,
+    reader_support: Mapping[str, str] | None = None,
 ) -> AdapterProcessResult:
-    """Invoke an adapter through the version-1 JSON subprocess protocol.
+    """Invoke an adapter through the version-2 JSON subprocess protocol.
 
     API 1 operations are ``validate``, ``render``, ``stream``, and the
     production ``reader`` dispatch. API 2 supports typed production entry
@@ -182,6 +187,19 @@ def invoke_adapter(
         raise AdapterProcessError(f"unsupported recipe API 1 operation: {operation}")
     if not isinstance(adapter_sha256, str) or _DIGEST_RE.fullmatch(adapter_sha256) is None:
         raise AdapterProcessError("adapter_sha256 must be a lowercase SHA-256 digest")
+    normalized_reader_support = dict(reader_support or {})
+    requires_reader_support = recipe_api == 2 and operation == "reader"
+    if requires_reader_support != bool(normalized_reader_support) or (
+        normalized_reader_support
+        and (
+            set(normalized_reader_support) != _READER_SUPPORT_MODULES
+            or any(
+                not isinstance(value, str) or _DIGEST_RE.fullmatch(value) is None
+                for value in normalized_reader_support.values()
+            )
+        )
+    ):
+        raise AdapterProcessError("reader_support must contain the API 2 reader module digests")
     if not isinstance(context, Mapping) or not isinstance(arguments or {}, Mapping):
         raise AdapterProcessError("context and arguments must be JSON objects")
     if type(allow_python_network) is not bool or type(allow_python_subprocess) is not bool:
@@ -257,6 +275,7 @@ def invoke_adapter(
                 ),
                 "filesystem_write_root": normalized_context.get("output_directory"),
             },
+            "support": {"modules": normalized_reader_support},
             "diagnostic_paths": {
                 "stdout": str(diagnostic_stdout),
                 "stderr": str(diagnostic_stderr),

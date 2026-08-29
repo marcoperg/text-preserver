@@ -181,10 +181,13 @@ class GretilInventoryTests(unittest.TestCase):
                                     f'xml:id="{root_id}"><teiHeader><fileDesc>'
                                     f"<titleStmt><title>{identifier}</title></titleStmt>"
                                     '<publicationStmt><availability status="free">'
-                                    "<p>Fixture rights</p></availability></publicationStmt>"
+                                    '<p>Fixture rights</p><licence target="https://example.org/terms"/>'
+                                    "</availability></publicationStmt>"
                                     "<sourceDesc><p>Fixture source</p></sourceDesc>"
                                     "</fileDesc></teiHeader><text><body>"
-                                    "<p>Fixture body</p></body></text></TEI>"
+                                    '<p xml:id="paragraph-1">Fixture body '
+                                    '<note xml:id="note-1">Fixture note</note></p>'
+                                    "</body></text></TEI>"
                                 ),
                             )
             for name in inventory.EXPECTED_DICTIONARIES:
@@ -230,10 +233,62 @@ class GretilInventoryTests(unittest.TestCase):
             )
             self.assertEqual(reader_payload["status"], "complete_with_warnings")
             self.assertEqual(reader_payload["summary"]["work_count"], 3)
-            self.assertEqual(len(list((reader_output / "works").glob("*.html"))), 3)
+            self.assertEqual(len(list((reader_output / "works").glob("*.html"))), 6)
             self.assertIn(self.expected_ids[0], (reader_output / "index.html").read_text())
             self.assertTrue((reader_output / "about.html").is_file())
             self.assertNotIn("<script", (reader_output / "index.html").read_text())
+            first_work = reader_output / f"works/{self.expected_ids[0]}.html"
+            self.assertTrue(first_work.is_file())
+            legacy_page = reader_output / "works/0001.html"
+            self.assertTrue(legacy_page.is_file())
+            self.assertIn(f'href="{self.expected_ids[0]}.html"', legacy_page.read_text())
+            first_page = first_work.read_text(encoding="utf-8")
+            self.assertIn('id="representation-tei"', first_page)
+            self.assertIn("Fixture rights", first_page)
+            self.assertIn("Fixture source", first_page)
+            self.assertIn('href="../assets/reader.css"', first_page)
+            self.assertIn("Access build complete with warnings", (reader_output / "index.html").read_text())
+            self.assertIn(".reader-nav", (reader_output / "assets/reader.css").read_text())
+            self.assertIn(".tei-text", (reader_output / "assets/gretil.css").read_text())
+            access = json.loads((reader_output / "access.json").read_text())
+            self.assertEqual(access["schema_version"], 1)
+            self.assertEqual(access["collection"]["id"], "tp:gretil/collection")
+            self.assertIn("Rights vary by item", access["collection"]["rights"][0])
+            self.assertEqual(len(access["items"]), 3)
+            self.assertEqual(access["items"][0]["representations"][0]["kind"], "tei")
+            self.assertEqual(
+                access["items"][0]["representations"][0]["segment_index"],
+                "access-segments.jsonl",
+            )
+            self.assertIn("status: free", access["items"][0]["rights"])
+            self.assertIn(
+                "licence target: https://example.org/terms",
+                access["items"][0]["rights"],
+            )
+            self.assertIn("Cite this item", first_page)
+            self.assertIn("tp:gretil/item/", first_page)
+            self.assertIn("data-access-id=", first_page)
+            for item in access["items"]:
+                item_page = (reader_output / item["route"]).read_text()
+                for representation in item["representations"]:
+                    _path, fragment = representation["route"].split("#", 1)
+                    self.assertIn(f'id="{fragment}"', item_page)
+                    for segment in representation["segments"]:
+                        _path, fragment = segment["route"].split("#", 1)
+                        self.assertIn(f'id="{fragment}"', item_page)
+            representations = {
+                representation["id"]: item
+                for item in access["items"]
+                for representation in item["representations"]
+            }
+            segment_lines = (reader_output / "access-segments.jsonl").read_text().splitlines()
+            self.assertEqual(len(segment_lines), 6)
+            for line in segment_lines:
+                segment_record = json.loads(line)
+                item = representations[segment_record["representation_id"]]
+                _path, fragment = segment_record["segment"]["route"].split("#", 1)
+                item_page = (reader_output / item["route"]).read_text()
+                self.assertIn(f'id="{fragment}"', item_page)
 
             with zipfile.ZipFile(
                 bulk / inventory.EXPECTED_BULK_PACKAGES[0],
@@ -301,6 +356,114 @@ class GretilInventoryTests(unittest.TestCase):
         self.assertIn("xml:id: verse-1", block)
         self.assertIn("resp: #VGA", block)
         self.assertIn("edRef: #Apte1929", block)
+        self.assertIn('id="segment-verse-1--occurrence-1"', block)
+
+        note = ElementTree.fromstring(
+            '<note xmlns="http://www.tei-c.org/ns/1.0" xml:id="note-1">Text</note>'
+        )
+        self.assertIn(
+            'id="segment-note-1--occurrence-1"',
+            reader._render_tei_element(note),
+        )
+        empty_rights = ElementTree.fromstring(
+            """
+<availability xmlns="http://www.tei-c.org/ns/1.0" status="restricted">
+  <licence target="https://example.org/licence"/>
+</availability>
+""".strip()
+        )
+        self.assertEqual(
+            reader._access_rights(empty_rights),
+            ("status: restricted", "licence target: https://example.org/licence"),
+        )
+
+    def test_reader_bounds_access_segments(self) -> None:
+        text = ElementTree.fromstring(
+            '<text xmlns="http://www.tei-c.org/ns/1.0" xml:id="text-1"/>'
+        )
+        original_limit = reader.MAX_READER_ACCESS_SEGMENTS
+        reader.MAX_READER_ACCESS_SEGMENTS = 0
+        try:
+            with self.assertRaisesRegex(reader.InventoryError, "exceeds 0 segments"):
+                reader._access_segments(text, "work-1", "works/work-1.html")
+        finally:
+            reader.MAX_READER_ACCESS_SEGMENTS = original_limit
+
+    def test_reader_qualifies_duplicate_source_segment_ids_by_occurrence(self) -> None:
+        text = ElementTree.fromstring(
+            """
+<text xmlns="http://www.tei-c.org/ns/1.0"><body>
+  <p xml:id="same">First</p><p xml:id="same">Second</p>
+</body></text>
+""".strip()
+        )
+        segments, anchors = reader._access_segments(
+            text,
+            "work-1",
+            "works/work-1.html",
+        )
+        rendered = reader._render_tei_element(text, segment_anchors=anchors)
+
+        self.assertEqual(len({segment.id for segment in segments}), 2)
+        self.assertEqual(len({segment.route for segment in segments}), 2)
+        for segment in segments:
+            _path, fragment = segment.route.split("#", 1)
+            self.assertIn(f'id="{fragment}"', rendered)
+
+        header = ElementTree.fromstring(
+            '<sourceDesc xmlns="http://www.tei-c.org/ns/1.0"><bibl xml:id="same">Header</bibl></sourceDesc>'
+        )
+        header_html = reader._reader_details("Source", header)
+        self.assertNotIn('id="segment-same--occurrence-1"', header_html)
+        self.assertIn("xml:id: same", header_html)
+
+    def test_reader_routes_keep_apostrophes_and_escape_unsafe_bytes(self) -> None:
+        identifier = "xct_tshangs-dbyangs-rgya-mtsho'i-mgul-glu"
+
+        self.assertEqual(reader.route_token(identifier), identifier)
+        self.assertEqual(reader.route_token("text name"), "text~20name")
+        self.assertEqual(reader.route_token("text~name"), "text~7ename")
+
+    def test_reader_navigation_skips_missing_middle_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory) / "20260828T120000Z-a1b2c3"
+            current = capture / "sources/current-register/mirror"
+            bulk = capture / "sources/bulk-packages/mirror"
+            current.mkdir(parents=True)
+            bulk.mkdir(parents=True)
+            shutil.copyfile(RECIPE_ROOT / "fixtures/catalogue.html", current / "gretil.html")
+            rendered_ids = (self.expected_ids[0], self.expected_ids[2])
+            with zipfile.ZipFile(bulk / "1_sanskr.zip", "w") as archive:
+                for identifier in rendered_ids:
+                    root_id = inventory.BULK_TEI_ROOT_ID_EXCEPTIONS.get(identifier, identifier)
+                    archive.writestr(
+                        f"1_sanskr/tei/{identifier}.xml",
+                        (
+                            '<TEI xmlns="http://www.tei-c.org/ns/1.0" '
+                            f'xml:id="{root_id}"><teiHeader><fileDesc>'
+                            f"<titleStmt><title>{identifier}</title></titleStmt>"
+                            "<publicationStmt><availability><p>Rights</p></availability>"
+                            "</publicationStmt><sourceDesc><p>Source</p></sourceDesc>"
+                            "</fileDesc></teiHeader><text><body><p>Body</p></body></text></TEI>"
+                        ),
+                    )
+            output = Path(directory) / "reader"
+
+            payload = reader.write_static_reader(
+                capture,
+                output_directory=output,
+                expected_work_count=3,
+            )
+
+            first_page = (output / f"works/{rendered_ids[0]}.html").read_text()
+            last_page = (output / f"works/{rendered_ids[1]}.html").read_text()
+            self.assertEqual(payload["status"], "incomplete")
+            self.assertIn(f"../works/{rendered_ids[1]}.html", first_page)
+            self.assertIn(f"../works/{rendered_ids[0]}.html", last_page)
+            self.assertNotIn(self.expected_ids[1], first_page)
+            self.assertNotIn(self.expected_ids[1], last_page)
+            access = json.loads((output / "access.json").read_text())
+            self.assertEqual(len(access["items"]), 2)
 
     def test_public_recipe_builds_bounded_nonrecursive_plan(self) -> None:
         config = load_config(REPOSITORY_ROOT / "collections.example.toml")

@@ -11,6 +11,8 @@ from unittest.mock import patch
 import zipfile
 
 from text_preserver.access.reader import build_static_reader, current_reader_index
+from text_preserver.access.reader_shell import reader_shell_identity
+from text_preserver.access.reader_model import reader_model_identity
 from text_preserver.adapters import _load_adapter
 from text_preserver.cli import main
 from text_preserver.config import load_config
@@ -873,6 +875,31 @@ def analyze_capture(capture_directory, **kwargs):
                 "etcsl-fixture",
                 self.capture,
             )
+
+    def test_api_2_reader_build_identity_includes_shared_shell(self) -> None:
+        recipe_path = self.root / "recipe/collection.toml"
+        recipe_path.write_text(
+            recipe_path.read_text(encoding="utf-8")
+            .replace("recipe_api = 1", "recipe_api = 2")
+            .replace("inventory_adapter =", "validator_adapter ="),
+            encoding="utf-8",
+        )
+        self.create_capture(recipe_api=2)
+        config = load_config(self.config_path)
+
+        result = build_static_reader(config, "etcsl-fixture", self.capture)
+
+        self.assertEqual(
+            result.metadata["reader_support"],
+            {
+                "text_preserver.access.reader_model": reader_model_identity(),
+                "text_preserver.access.reader_shell": reader_shell_identity(),
+            },
+        )
+        self.assertEqual(
+            result.metadata["build_inputs"]["reader_support"],
+            result.metadata["reader_support"],
+        )
 
     def test_changed_renderer_changes_reader_build_key(self) -> None:
         self.create_capture()

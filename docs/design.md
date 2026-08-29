@@ -592,7 +592,7 @@ The implemented first access derivative is built with:
 text-preserver derive reader COLLECTION_ID /path/to/capture
 ```
 
-The generic builder verifies capture fixity before rendering and requires the manifest digest to remain identical afterward. Both adapter contracts materialize UTF-8 output in staging with bounded paths, types, links, file sizes, total size, and file count. Reader metadata schema 3 derives a full SHA-256 build key from only semantic inputs: schema, collection, initial manifest digest, sorted selected source IDs, recipe API and bundle digest, renderer byte digest and selected entry point, and expected work count. Creation time, capture ID, absolute paths, raw configuration, and operator/storage settings are excluded. A canonical digest inventories sorted relative POSIX directory/file entries (with file sizes and SHA-256 values), excluding builder-owned `metadata.json`.
+The generic builder verifies capture fixity before rendering and requires the manifest digest to remain identical afterward. Both adapter contracts materialize UTF-8 output in staging with bounded paths, types, links, file sizes, total size, and file count. Reader metadata schema 3 derives a full SHA-256 build key from only semantic inputs: schema, collection, initial manifest digest, sorted selected source IDs, recipe API and bundle digest, renderer byte digest and selected entry point, expected work count, and the versioned shared access-model and reader-shell source identities for API 2 readers. Creation time, capture ID, absolute paths, raw configuration, and operator/storage settings are excluded. Protocol version 2 carries those support-module digests in a strict request descriptor; the worker verifies and preloads their exact source bytes before loading the recipe adapter. A canonical digest inventories sorted relative POSIX directory/file entries (with file sizes and SHA-256 values), excluding builder-owned `metadata.json`.
 
 The adapter executes on every invocation. A matching existing full-key generation is verified and reused; a same-key output/status/summary/warning mismatch or corrupt generation quarantines the candidate read-only with `reproducibility.json` and changes no pointers. New generations are immutable. Reader generation and pointer publication is serialized per collection, and a failed canonical pointer write restores the prior stable symlink. Every successful publication switches the capture-scoped `reader` link. A usable build also writes regular `LATEST-READER` metadata and switches the stable collection `reader` symlink; incomplete builds switch neither collection indicator. Current-reader lookup requires the canonical metadata identity, successful status, build inputs, and output-tree digest to agree with the text pointer and symlink, and falls back to a safe legacy symlink only when `LATEST-READER` is absent. `text-preserver open reader COLLECTION_ID` opens this stable path.
 
@@ -600,9 +600,35 @@ The adapter executes on every invocation. A matching existing full-key generatio
 
 ## Unified reader
 
-A unified frontend is a natural long-term access layer, provided that it unifies **operations**, not source formats.
+A unified frontend is a natural long-term access layer, provided that it unifies **operations**, not source formats or page templates.
 
 The reader should not pretend that all collections share the same textual structure. Instead, it should expose a common model while preserving collection-specific detail.
+
+The implementation begins with a versioned Python shell library under
+`text_preserver.access`. It supplies the inert HTML envelope, external base stylesheet,
+responsive and print behavior, local navigation, status/warning panels, and plain-text
+provenance facts. Recipe adapters compose those primitives and provide their own body
+renderers and optional collection stylesheet. ETCSL therefore retains its parallel
+transliteration/translation view, while GRETIL retains streamed TEI mixed content,
+apparatus, rights, and its metadata sidebar. This shared source is an explicit reader
+build input rather than an untracked dependency outside the captured recipe bundle.
+
+Each migrated reader emits a validated `access.json` document using the common model
+schema. The document records stable `tp:` identifiers, local routes, rights and
+citations, typed items and representations, source-supported segments, preserved
+package/member artifacts, and explicit graph relations. It does not contain rendered
+text and does not require every collection to invent work or segment concepts that its
+source does not support. ETCSL exposes composition, transliteration, translation, and
+numbered line/paragraph records inline. GRETIL exposes reviewed texts, TEI
+representations, item rights, package members, and source `xml:id` occurrences through
+one bounded, incrementally written `access-segments.jsonl` index referenced by each
+representation. Occurrence suffixes keep links and identifiers distinct when source
+files violate `xml:id` uniqueness without pretending those repeated values are unique.
+The parent validates referenced index existence, canonical JSON Lines records,
+representation membership, aggregate bounds, and global segment ID/route uniqueness
+before publishing a generation. Reader adapters receive a 120-second wall allowance;
+the subprocess memory, file-size, output-tree, network, and write-scope controls remain
+in force.
 
 ### Common model
 
