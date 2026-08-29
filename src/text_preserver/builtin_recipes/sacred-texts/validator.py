@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 from typing import Sequence
 
+from text_preserver.adapters import ValidationContext, ValidationReport
+
 
 ITEM_IDENTIFIER = "sacred_texts_com_2021_10_09"
 METADATA_FILENAME = ITEM_IDENTIFIER
@@ -341,3 +343,18 @@ def _digest_gzip_payload(path: Path) -> tuple[int, str]:
                 raise InventoryError("recovered text payload exceeds safety limit")
             digest.update(chunk)
     return size, digest.hexdigest()
+
+
+def validate(context: ValidationContext) -> ValidationReport:
+    """Validate a capture through the recipe API 2 typed contract."""
+    report = analyze_capture(
+        context.capture_directory,
+        expected_work_count=context.expected_work_count,
+        required_representation_kinds=context.required_representation_kinds,
+        required_source_ids=context.required_source_ids,
+    )
+    details = dict(report)
+    status = details.pop("status")
+    errors = tuple(details.pop("errors"))
+    warnings = tuple(details.pop("warnings"))
+    return ValidationReport(status, errors, warnings, details)

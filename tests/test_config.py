@@ -4,9 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
 
-from text_preserver import recipes
 from text_preserver.config import ConfigError, load_config
 from text_preserver.recipes import public_recipe_path
 
@@ -100,6 +98,65 @@ allowed_hosts = ["example.org"]
         )
         with self.assertRaisesRegex(ConfigError, "is not in allowed_hosts"):
             load_config(self.write_config(invalid))
+
+    def test_loads_exact_reviewed_redirect_edges(self) -> None:
+        document = VALID_CONFIG.replace(
+            'allowed_hosts = ["example.org"]',
+            'allowed_hosts = ["example.org", "www.example.org"]\n'
+            'reviewed_redirects = [{ from = "https://example.org/old", '
+            'to = "https://www.example.org/new" }]',
+            1,
+        )
+
+        source = load_config(self.write_config(document)).collections[0].sources[0]
+
+        self.assertEqual(
+            source.reviewed_redirects,
+            (("https://example.org/old", "https://www.example.org/new"),),
+        )
+
+    def test_rejects_unsafe_or_ambiguous_reviewed_redirects(self) -> None:
+        cases = (
+            (
+                '[{ from = "https://example.org/old#fragment", '
+                'to = "https://example.org/new" }]',
+                "fragments are not allowed",
+            ),
+            (
+                '[{ from = "https://example.org/old", '
+                'to = "https://outside.example/new" }]',
+                "is not in allowed_hosts",
+            ),
+            (
+                '[{ from = "https://example.org/old", to = "https://example.org/a" }, '
+                '{ from = "https://example.org/old", to = "https://example.org/b" }]',
+                "duplicate redirect source URL",
+            ),
+        )
+        for redirects, message in cases:
+            with self.subTest(message=message):
+                document = VALID_CONFIG.replace(
+                    'allowed_hosts = ["example.org"]',
+                    f'allowed_hosts = ["example.org"]\nreviewed_redirects = {redirects}',
+                    1,
+                )
+                with self.assertRaisesRegex(ConfigError, message):
+                    load_config(self.write_config(document))
+
+    def test_reviewed_redirects_require_retained_warc(self) -> None:
+        document = VALID_CONFIG.replace(
+            'allowed_hosts = ["example.org"]',
+            'allowed_hosts = ["example.org"]\n'
+            'reviewed_redirects = [{ from = "https://example.org/old", '
+            'to = "https://example.org/new" }]',
+            1,
+        ).replace(
+            'quota = "50M"',
+            'quota = "50M"\nwarc = false\nwarc_cdx = false',
+        )
+
+        with self.assertRaisesRegex(ConfigError, "requires WARC capture"):
+            load_config(self.write_config(document))
 
     def test_rejects_credentials_in_seed(self) -> None:
         invalid = VALID_CONFIG.replace(
@@ -197,20 +254,11 @@ allowed_hosts = ["example.org"]
         with self.assertRaisesRegex(ConfigError, "invalid public collection ID"):
             load_config(self.write_config(config))
 
-    def test_public_recipe_lookup_skips_unrelated_collections_directory(self) -> None:
-        unrelated = self.root / "python/collections"
-        recipe_root = self.root / "share/text-preserver/collections"
-        recipe = recipe_root / "etcsl/collection.toml"
-        unrelated.mkdir(parents=True)
-        recipe.parent.mkdir(parents=True)
-        recipe.write_text("recipe_api = 1\n\n[collection]\n", encoding="utf-8")
+    def test_public_recipe_is_an_importable_package_resource(self) -> None:
+        recipe = public_recipe_path("etcsl")
 
-        with patch.object(
-            recipes,
-            "_public_collection_roots",
-            return_value=(unrelated, recipe_root),
-        ):
-            self.assertEqual(public_recipe_path("etcsl"), recipe)
+        self.assertTrue(recipe.is_file())
+        self.assertIn("text_preserver/builtin_recipes/etcsl", recipe.as_posix())
 
     def test_loads_collection_recipe_relative_to_configuration(self) -> None:
         recipe = self.root / "recipes/example.toml"
@@ -245,7 +293,7 @@ allowed_hosts = ["example.org"]
     def test_external_recipe_requires_supported_recipe_api(self) -> None:
         recipe = self.root / "recipe.toml"
         body = """
-recipe_api = 2
+recipe_api = 3
 
 [collection]
 id = "recipe-collection"
@@ -262,11 +310,50 @@ allowed_hosts = ["example.org"]
         operator_config = 'recipes = ["recipe.toml"]\n\n'
         operator_config += VALID_CONFIG.split("[[collections]]", 1)[0]
 
-        with self.assertRaisesRegex(ConfigError, "recipe_api must be supported value 1"):
+        with self.assertRaisesRegex(ConfigError, "supported values 1 or 2"):
             load_config(self.write_config(operator_config))
 
-        recipe.write_text(body.replace("recipe_api = 2\n\n", ""), encoding="utf-8")
-        with self.assertRaisesRegex(ConfigError, "recipe_api must be supported value 1"):
+        recipe.write_text(body.replace("recipe_api = 3\n\n", ""), encoding="utf-8")
+        with self.assertRaisesRegex(ConfigError, "supported values 1 or 2"):
+            load_config(self.write_config(operator_config))
+
+    def test_recipe_api_2_requires_explicit_validator_capability(self) -> None:
+        recipe = self.root / "recipe.toml"
+        body = """
+recipe_api = 2
+
+[collection]
+id = "recipe-collection"
+title = "Recipe Collection"
+
+[collection.analysis]
+validator_adapter = "validator.py"
+reader_adapter = "reader.py"
+
+[[collection.sources]]
+id = "web"
+kind = "web"
+title = "Website"
+seeds = ["https://example.org/"]
+allowed_hosts = ["example.org"]
+""".strip()
+        recipe.write_text(body, encoding="utf-8")
+        operator_config = 'recipes = ["recipe.toml"]\n\n'
+        operator_config += VALID_CONFIG.split("[[collections]]", 1)[0]
+
+        collection = load_config(self.write_config(operator_config)).collections[0]
+        self.assertEqual(collection.recipe_api, 2)
+        self.assertEqual(collection.analysis["validator_adapter"], "validator.py")
+
+        recipe.write_text(body.replace('validator_adapter = "validator.py"\n', ""), encoding="utf-8")
+        with self.assertRaisesRegex(ConfigError, "must declare a validator capability"):
+            load_config(self.write_config(operator_config))
+
+        recipe.write_text(
+            body.replace('validator_adapter = "validator.py"', 'inventory_adapter = "validator.py"'),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ConfigError, "uses validator_adapter"):
             load_config(self.write_config(operator_config))
 
     def test_rejects_duplicate_ids_across_inline_and_recipe_collections(self) -> None:

@@ -11,10 +11,11 @@
     "status",
     "started_at",
     "selected_sources",
-    "sources"
+    "sources",
+    "payload_roles"
   ],
   "properties": {
-    "schema_version": { "const": 2 },
+    "schema_version": { "const": 3 },
     "capture_id": {
       "type": "string",
       "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-z0-9]{6,16}$"
@@ -33,7 +34,6 @@
         { "type": "null" }
       ]
     },
-    "operator_note": { "type": "string" },
     "error": {
       "oneOf": [
         { "type": "string" },
@@ -49,9 +49,29 @@
     "sources": {
       "type": "array",
       "items": { "$ref": "#/$defs/sourceResult" }
+    },
+    "payload_roles": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/payloadRole" }
     }
   },
   "$defs": {
+    "payloadRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "role"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "role": {
+          "enum": ["preservation_original", "capture_derivative", "metadata"]
+        }
+      }
+    },
     "sourceResult": {
       "type": "object",
       "additionalProperties": false,

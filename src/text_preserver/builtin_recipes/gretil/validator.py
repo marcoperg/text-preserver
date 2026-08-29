@@ -15,6 +15,8 @@ from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 import xml.etree.ElementTree as ElementTree
 import zipfile
 
+from text_preserver.adapters import ValidationContext, ValidationReport
+
 
 REGISTER_URL = "https://gretil.sub.uni-goettingen.de/gretil.html"
 PRIMARY_HOST = "gretil.sub.uni-goettingen.de"
@@ -667,3 +669,18 @@ def _read_json(path: Path) -> dict[str, object]:
     if not isinstance(value, dict):
         raise InventoryError(f"JSON document is not an object: {path}")
     return value
+
+
+def validate(context: ValidationContext) -> ValidationReport:
+    """Validate a capture through the recipe API 2 typed contract."""
+    report = analyze_capture(
+        context.capture_directory,
+        expected_work_count=context.expected_work_count,
+        required_representation_kinds=context.required_representation_kinds,
+        required_source_ids=context.required_source_ids,
+    )
+    details = dict(report)
+    status = details.pop("status")
+    errors = tuple(details.pop("errors"))
+    warnings = tuple(details.pop("warnings"))
+    return ValidationReport(status, errors, warnings, details)

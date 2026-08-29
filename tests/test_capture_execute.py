@@ -10,6 +10,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from jsonschema import Draft202012Validator, FormatChecker
+
 from text_preserver.preservation.capture import CaptureExecutionError, execute_capture
 from text_preserver.preservation.capture.execute import (
     _aggregate_status,
@@ -19,6 +21,7 @@ from text_preserver.preservation.capture.execute import (
 )
 from text_preserver.config import load_config
 from text_preserver.preservation.fixity import finalize_capture
+from text_preserver.preservation.payload_roles import PayloadRole, load_verified_capture
 
 from tests.test_config import VALID_CONFIG
 
@@ -278,13 +281,68 @@ class CaptureExecutionTests(unittest.TestCase):
         )
 
         source = result.metadata["sources"][0]
-        self.assertEqual(result.metadata["schema_version"], 2)
+        self.assertEqual(result.metadata["schema_version"], 3)
         self.assertEqual(result.status, "complete")
         self.assertEqual(source["payloads"]["mirror"], {"files": 1, "bytes": 7})
         self.assertEqual(source["downloaded_files"], 1)
         self.assertEqual(source["downloaded_bytes"], 7)
         self.assertEqual(source["payloads"]["warc"]["files"], 0)
         self.assertIsNone(source["payloads"]["warc"]["indexed_records"])
+        capture = json.loads(
+            (result.capture_directory / "capture.json").read_text(encoding="utf-8")
+        )
+        roles = {item["path"]: item["role"] for item in capture["payload_roles"]}
+        regular_files = {
+            path.relative_to(result.capture_directory).as_posix()
+            for path in result.capture_directory.rglob("*")
+            if path.is_file()
+        }
+        self.assertEqual(set(roles), regular_files)
+        self.assertEqual(roles["SHA256SUMS"], "metadata")
+        self.assertEqual(roles["manifest-sha256.json"], "metadata")
+        self.assertEqual(
+            roles["sources/web/mirror/example.org/payload.txt"],
+            "capture_derivative",
+        )
+        verified = load_verified_capture(result.capture_directory)
+        self.assertEqual(
+            verified.role_for("sources/web/mirror/example.org/payload.txt"),
+            PayloadRole.CAPTURE_DERIVATIVE,
+        )
+        schema = json.loads(
+            (Path(__file__).parents[1] / "schemas/capture-manifest.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        Draft202012Validator(schema, format_checker=FormatChecker()).validate(capture)
+
+    @patch(
+        "text_preserver.preservation.capture.execute._run_wget",
+        side_effect=wget_with_mirror,
+    )
+    @patch(
+        "text_preserver.preservation.capture.execute._validated_wget",
+        return_value=("/usr/bin/wget", "GNU Wget test"),
+    )
+    def test_new_capture_classifies_direct_deposit_as_original(
+        self,
+        _mock_validated_wget: object,
+        _mock_run_wget: object,
+    ) -> None:
+        result = execute_capture(
+            load_config(self.config_path),
+            "test-collection",
+            source_ids=["dataset"],
+            capture_id="20260827T120000Z-d1p2s3",
+        )
+
+        roles = {
+            item["path"]: item["role"] for item in result.metadata["payload_roles"]
+        }
+        self.assertEqual(
+            roles["sources/dataset/mirror/example.org/payload.txt"],
+            "preservation_original",
+        )
 
     @patch(
         "text_preserver.preservation.capture.execute._validated_wget",
@@ -367,6 +425,14 @@ class CaptureExecutionTests(unittest.TestCase):
         self.assertEqual(warc["cdx_files"], 1)
         self.assertEqual(warc["indexed_records"], 2)
         self.assertTrue(warc["has_response_or_resource"])
+        roles = {
+            item["path"]: item["role"] for item in result.metadata["payload_roles"]
+        }
+        self.assertEqual(
+            roles["sources/web/warc/capture.warc.gz"],
+            "preservation_original",
+        )
+        self.assertEqual(roles["sources/web/warc/capture.cdx"], "capture_derivative")
 
     @patch(
         "text_preserver.preservation.capture.execute._validated_wget",
@@ -474,15 +540,58 @@ class CaptureExecutionTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
         )
         self.assertEqual(capture["status"], "failed")
-        self.assertEqual(capture["operator_note"], "Expected local failure")
+        self.assertNotIn("operator_note", capture)
         self.assertEqual(source["status"], "failed")
         self.assertIsNotNone(source["exit_code"])
-        self.assertTrue((result.capture_directory / "metadata/input-config.toml").is_file())
+        private = result.capture_directory / "metadata/private"
+        self.assertTrue((private / "input-config.toml").is_file())
+        operator = json.loads((private / "operator.json").read_text(encoding="utf-8"))
+        self.assertEqual(operator["operator"], "Test operator")
+        self.assertEqual(operator["contact"], "mailto:test@example.org")
+        self.assertEqual(operator["note"], "Expected local failure")
         self.assertFalse((result.capture_directory.parent.parent / "LATEST").exists())
         self.assertFalse((result.capture_directory.parent.parent / "LATEST-web").exists())
         self.assertEqual(
-            (result.capture_directory / "metadata/input-config.toml").read_bytes(),
+            (private / "input-config.toml").read_bytes(),
             config.input_bytes,
+        )
+        public_environment = json.loads(
+            (result.capture_directory / "metadata/environment.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertNotIn("hostname", public_environment)
+        self.assertNotIn("process_id", public_environment)
+        self.assertNotIn("python_executable", public_environment)
+        self.assertNotIn("platform_system", public_environment)
+        self.assertNotIn("platform_machine", public_environment)
+        private_environment = json.loads(
+            (private / "environment.json").read_text(encoding="utf-8")
+        )
+        self.assertIn("hostname", private_environment)
+        self.assertIn("process_id", private_environment)
+        self.assertIn("platform_system", private_environment)
+        self.assertIn("platform_machine", private_environment)
+        self.assertEqual(private_environment["config_path"], str(config.path))
+        public_command = json.loads(
+            (
+                result.capture_directory / "sources/web/metadata/command.json"
+            ).read_text(encoding="utf-8")
+        )
+        private_command = json.loads(
+            (
+                result.capture_directory / "sources/web/metadata/private/command.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(public_command["argv"][0], "wget")
+        self.assertEqual(public_command["working_directory"], ".")
+        self.assertNotIn(str(result.capture_directory), json.dumps(public_command))
+        self.assertEqual(
+            private_command["argv"][0], private_environment["wget_executable"]
+        )
+        self.assertEqual(
+            private_command["working_directory"],
+            str(result.capture_directory / "sources/web"),
         )
         self.assertEqual(
             (result.capture_directory / "metadata/recipe-bundle/inventory.py").read_bytes(),

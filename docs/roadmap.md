@@ -138,7 +138,7 @@ then make every derivation from sealed bytes reproducible and input-addressed.
 
 ## Phase 3: stabilize recipe API and built-in distribution
 
-**Status:** Planned; versioned bundle capture is already complete
+**Status:** Complete
 
 **Purpose:** Separate recipe capabilities cleanly and remove fragile built-in recipe
 file enumeration without invalidating captured version-1 recipes.
@@ -198,7 +198,7 @@ forcing different source formats into one scholarly hierarchy.
 
 ## Phase 5: harden execution, privacy, and network scope
 
-**Status:** Planned; trusted-code disclosure and conservative redirects already exist
+**Status:** Complete
 
 **Purpose:** Prepare for externally supplied recipes and shareable exports without
 overstating sandbox guarantees.
@@ -228,7 +228,7 @@ overstating sandbox guarantees.
 
 ## Phase 6: classify payload roles and add interoperable exports
 
-**Status:** Planned; WARC-versus-mirror semantics are already documented
+**Status:** Complete
 
 **Purpose:** Make original evidence and capture-time derivatives machine-readable,
 then provide portable exports without rewriting immutable captures.
@@ -324,19 +324,19 @@ The following do not block version 0.1:
 | --- | --- | --- |
 | Separate acquisition success from preservation completeness | Phase 2 | Complete. |
 | Correct WARC-only status | Baseline | Complete. |
-| Preserve versioned recipe bundles | Baseline and Phase 3 | Core complete; built-in resource distribution remains. |
-| Split adapter responsibilities | Phases 1 and 3 | Reader split complete; validator contract remains. |
-| Treat recipe code as trusted or isolate it | Phase 5 | Trust is documented; process separation remains. |
+| Preserve versioned recipe bundles | Baseline and Phase 3 | Complete, including recursive built-in resource distribution. |
+| Split adapter responsibilities | Phases 1 and 3 | Complete through API 2 validator and reader capabilities. |
+| Treat recipe code as trusted or isolate it | Phase 5 | Complete with bounded subprocess isolation and explicit limits. |
 | Immutable input-addressed validations | Baseline | Complete. |
 | Deterministic reader generations and output digest | Phase 2 | Complete. |
-| Clarify original payloads and capture-time derivatives | Phase 6 | Documented; machine-readable roles remain. |
+| Clarify original payloads and capture-time derivatives | Phase 6 | Complete in capture schema 3 with legacy inference. |
 | Weaker Item/Representation/Relation model | Baseline | Complete in the design. |
 | Runtime and JSON Schema drift | Baseline | Conformance tests complete. |
-| Split public and private provenance | Phase 5 | Planned. |
+| Split public and private provenance | Phase 5 | Complete with explicit private paths and public export allowlists. |
 | Distinguish fixity from authenticity | Baseline | Complete in the design. |
-| Safe redirect handling | Phase 5 | Redirects remain disabled; discovery and reviewed targets remain. |
+| Safe redirect handling | Phase 5 | Complete with WARC discovery and exact reviewed per-hop targets. |
 | Cross-platform clean-wheel CI | Baseline | Complete. |
-| BagIt and WACZ interoperability | Phase 6 | Planned in that order. |
+| BagIt and WACZ interoperability | Phase 6 | Complete with offline creation and independent validation. |
 | Unified reader with collection-specific semantics | Phase 4 | Existing readers provide the migration inputs. |
 | Keep research downstream and optional | Phase 7 | Enforced as a deferral. |
 

@@ -4,15 +4,23 @@ from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
 
 import text_preserver
 from text_preserver.access.reader import build_static_reader
+from text_preserver.access.wacz import WaczMetadata, create_wacz, validate_wacz
 from text_preserver.preservation.capture import execute_capture
 from text_preserver.config import load_config
+from text_preserver.preservation.bagit import create_bag, validate_bag
 from text_preserver.preservation.fixity import verify_capture
+from text_preserver.preservation.payload_roles import (
+    export_policy,
+    load_verified_capture,
+    preservation_warc_paths,
+)
 from text_preserver.preservation.validation import analyze_preservation
 
 
@@ -22,7 +30,7 @@ PUBLIC_RECIPE_FILES = {
         "collection.toml",
         "fixtures/catalogue.html",
         "fixtures/expected-ids.txt",
-        "inventory.py",
+        "validator.py",
         "reader.py",
         "rules/preservation.pl",
         "seeds/repository.txt",
@@ -34,7 +42,7 @@ PUBLIC_RECIPE_FILES = {
         "fixtures/catalogue.html",
         "fixtures/reviewed-tei-ids.txt",
         "fixtures/sample-expected-ids.txt",
-        "inventory.py",
+        "validator.py",
         "reader.py",
         "seeds/bulk-packages.txt",
         "seeds/current-register.txt",
@@ -44,7 +52,7 @@ PUBLIC_RECIPE_FILES = {
     "sacred-texts": {
         "README.md",
         "collection.toml",
-        "inventory.py",
+        "validator.py",
         "seeds/internet-archive-2021.txt",
         "seeds/wayback-download-recovery.txt",
     },
@@ -52,7 +60,9 @@ PUBLIC_RECIPE_FILES = {
 
 
 ADAPTER = r'''
+import os
 from pathlib import Path
+from text_preserver.adapters import ReaderReport, ValidationReport
 
 
 def _payload(capture_directory: Path) -> str:
@@ -73,6 +83,16 @@ def analyze_capture(capture_directory, **_kwargs):
     }
 
 
+def validate(context):
+    payload = analyze_capture(context.capture_directory)
+    return ValidationReport(
+        payload.pop("status"),
+        tuple(payload.pop("errors")),
+        tuple(payload.pop("warnings")),
+        {**payload, "worker_pid": os.getpid()},
+    )
+
+
 def render_static_reader(capture_directory, **_kwargs):
     template = (Path(__file__).parent / "template.txt").read_text(encoding="utf-8")
     return {
@@ -81,6 +101,16 @@ def render_static_reader(capture_directory, **_kwargs):
         "summary": {"item_count": 1},
         "warnings": [],
     }
+
+
+def build_reader(context):
+    payload = render_static_reader(context.capture_directory)
+    return ReaderReport(
+        payload["status"],
+        payload["summary"],
+        tuple(payload["warnings"]),
+        payload["files"],
+    )
 '''.strip()
 
 
@@ -123,7 +153,7 @@ user_agent = "text-preserver-installed-smoke/1.0"
     collections = load_config(config_path).collections
     assert {collection.id for collection in collections} == set(PUBLIC_RECIPE_FILES)
     for collection in collections:
-        assert collection.recipe_api == 1
+        assert collection.recipe_api == 2
         assert collection.recipe_path is not None
         recipe_root = collection.recipe_path.parent
         installed = {
@@ -148,14 +178,15 @@ def run_fixture_flow(root: Path) -> None:
         (recipe / "template.txt").write_text("Installed fixture", encoding="utf-8")
         (recipe / "collection.toml").write_text(
             f'''
-recipe_api = 1
+recipe_api = 2
 
 [collection]
 id = "installed-fixture"
 title = "Installed Fixture"
 
 [collection.analysis]
-inventory_adapter = "adapter.py"
+validator_adapter = "adapter.py"
+reader_adapter = "adapter.py"
 
 [[collection.sources]]
 id = "web"
@@ -214,17 +245,47 @@ user_agent = "text-preserver-installed-smoke/1.0"
                 encoding="utf-8"
             )
         )
-        assert manifest["recipe_api"] == 1
+        assert manifest["recipe_api"] == 2
+
+        verified_capture = load_verified_capture(capture.capture_directory)
+        public_bag = root / "installed-public.bag"
+        create_bag(
+            verified_capture,
+            public_bag,
+            profile="public",
+            policy=export_policy(verified_capture, "public"),
+        )
+        assert validate_bag(public_bag).ok
+        assert not (public_bag / "data/capture/metadata/private").exists()
+        public_wacz = root / "installed-public.wacz"
+        create_wacz(
+            verified_capture,
+            public_wacz,
+            warc_paths=preservation_warc_paths(verified_capture),
+            profile="public",
+            policy=export_policy(verified_capture, "public"),
+            metadata=WaczMetadata(
+                title="Installed fixture",
+                description="Installed-package offline replay smoke test.",
+                created=str(capture.metadata["ended_at"]),
+            ),
+        )
+        assert validate_wacz(public_wacz).ok
 
         validation = analyze_preservation(config, "installed-fixture")
         assert validation.status == "complete"
         assert validation.report["template"] == "Installed fixture"
+        assert validation.report["worker_pid"] != os.getpid()
+        assert "path" not in validation.report["analyzer"]
+        assert validation.report["adapter_controls"]["process_separation"]["enforced"]
         assert validation.report_path.is_file()
         reader = build_static_reader(config, "installed-fixture")
         assert reader.metadata["status"] == "complete"
         assert reader.metadata["schema_version"] == 3
         assert len(reader.metadata["build_key"]) == 64
         assert len(reader.metadata["output_tree"]["sha256"]) == 64
+        assert "path" not in reader.metadata["renderer"]
+        assert reader.metadata["adapter_controls"]["process_separation"]["enforced"]
         assert "Installed fixture" in reader.index_path.read_text(encoding="utf-8")
         generation = reader.output_directory.resolve()
         rebuilt = build_static_reader(config, "installed-fixture")

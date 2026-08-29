@@ -1,4 +1,4 @@
-recipe_api = 1
+recipe_api = 2
 
 [collection]
 id = "etcsl"
@@ -19,7 +19,7 @@ quota = "250M"
 limit_rate = "250K"
 
 [collection.analysis]
-inventory_adapter = "inventory.py"
+validator_adapter = "validator.py"
 reader_adapter = "reader.py"
 ciao_rules = "rules/preservation.pl"
 reader_source = "ota-dataset"

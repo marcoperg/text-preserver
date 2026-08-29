@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import json
 import shutil
 import subprocess
 import tempfile
@@ -60,7 +61,23 @@ class WgetIntegrationTests(unittest.TestCase):
                     )
                     self.end_headers()
                 elif self.path == "/redirect-target":
-                    self._send(b"redirect followed", "text/plain")
+                    self.send_response(302)
+                    self.send_header(
+                        "Location",
+                        f"http://127.0.0.1:{self.server.server_port}/second-target",
+                    )
+                    self.end_headers()
+                elif self.path == "/single-redirect":
+                    self.send_response(302)
+                    self.send_header(
+                        "Location",
+                        f"http://localhost:{self.server.server_port}/single-target",
+                    )
+                    self.end_headers()
+                elif self.path == "/single-target":
+                    self._send(b"reviewed redirect target", "text/plain")
+                elif self.path == "/second-target":
+                    self._send(b"second redirect followed", "text/plain")
                 else:
                     self.send_error(404)
 
@@ -84,8 +101,21 @@ class WgetIntegrationTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=5)
 
-    def write_config(self, seed_path: str, *, mirror: bool = True) -> Path:
+    def write_config(
+        self,
+        seed_path: str,
+        *,
+        mirror: bool = True,
+        reviewed_redirects: tuple[tuple[str, str], ...] = (),
+    ) -> Path:
         port = self.server.server_port
+        redirect_config = ""
+        if reviewed_redirects:
+            entries = ", ".join(
+                f'{{ from = "{source}", to = "{target}" }}'
+                for source, target in reviewed_redirects
+            )
+            redirect_config = f"reviewed_redirects = [{entries}]"
         source_capture = ""
         if not mirror:
             source_capture = """
@@ -120,7 +150,8 @@ id = "web"
 kind = "web"
 title = "Local website"
 seeds = ["http://127.0.0.1:{port}{seed_path}"]
-allowed_hosts = ["127.0.0.1"]
+allowed_hosts = ["127.0.0.1", "localhost"]
+{redirect_config}
 {source_capture}
 """.strip()
         path = self.root / "collections.toml"
@@ -269,6 +300,83 @@ allowed_hosts = ["127.0.0.1"]
             f"returncode={result.returncode}; stderr={result.stderr!r}; wget.log:\n{log}",
         )
         self.assertNotIn("/redirect-target", self.requests)
+
+    def test_reviewed_edge_is_requested_after_proposal_and_unreviewed_second_hop_stops(self) -> None:
+        port = self.server.server_port
+        first = f"http://127.0.0.1:{port}/redirect"
+        reviewed_target = f"http://localhost:{port}/redirect-target"
+        config = load_config(
+            self.write_config(
+                "/redirect",
+                reviewed_redirects=((first, reviewed_target),),
+            )
+        )
+
+        capture = execute_capture(
+            config,
+            "local-fixture",
+            capture_id="20260827T120000Z-r1d2r3",
+        )
+
+        self.assertEqual(capture.status, "partial")
+        self.assertLess(self.requests.index("/redirect"), self.requests.index("/redirect-target"))
+        self.assertNotIn("/second-target", self.requests)
+        redirects = json.loads(
+            (
+                capture.capture_directory / "sources/web/metadata/redirects.json"
+            ).read_text(encoding="utf-8")
+        )
+        proposals = redirects["proposals"]
+        self.assertEqual(len(proposals), 2)
+        self.assertEqual(
+            (proposals[0]["from"], proposals[0]["to"]),
+            (first, reviewed_target),
+        )
+        self.assertTrue(proposals[0]["reviewed"])
+        self.assertTrue(proposals[0]["requested"])
+        self.assertFalse(proposals[1]["reviewed"])
+        self.assertFalse(proposals[1]["requested"])
+        private_command = json.loads(
+            (
+                capture.capture_directory / "sources/web/metadata/private/command.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(len(private_command["redirect_commands"]), 1)
+        self.assertIn("--max-redirect=0", private_command["redirect_commands"][0]["argv"])
+        redirect_quota = next(
+            value
+            for value in private_command["redirect_commands"][0]["argv"]
+            if value.startswith("--quota=")
+        )
+        self.assertNotEqual(redirect_quota, "--quota=5M")
+        self.assertLess(int(redirect_quota.removeprefix("--quota=")), 5 * 1024 * 1024)
+        self.assertEqual(
+            private_command["redirect_commands"][0]["request_urls"],
+            [reviewed_target],
+        )
+
+    def test_reviewed_redirect_to_successful_target_is_complete_with_warning(self) -> None:
+        port = self.server.server_port
+        first = f"http://127.0.0.1:{port}/single-redirect"
+        reviewed_target = f"http://localhost:{port}/single-target"
+        config = load_config(
+            self.write_config(
+                "/single-redirect",
+                reviewed_redirects=((first, reviewed_target),),
+            )
+        )
+
+        capture = execute_capture(
+            config,
+            "local-fixture",
+            capture_id="20260827T120000Z-s1d2s3",
+        )
+
+        self.assertEqual(capture.status, "complete_with_warnings")
+        self.assertLess(
+            self.requests.index("/single-redirect"),
+            self.requests.index("/single-target"),
+        )
 
 
 if __name__ == "__main__":

@@ -19,10 +19,11 @@ from text_preserver.preservation.fixity import finalize_capture, verify_capture
 from text_preserver.preservation.validation import analyze_preservation
 from text_preserver.preservation.recipe_bundle import copy_bundle, scan_recipe_directory
 from text_preserver.lifecycle import collection_lifecycle_status
+from text_preserver.recipes import public_recipe_path
 
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
-ETCSL_RECIPE = REPOSITORY_ROOT / "collections/etcsl"
+ETCSL_RECIPE = public_recipe_path("etcsl").parent
 
 
 class PreservationAnalysisTests(unittest.TestCase):
@@ -32,7 +33,8 @@ class PreservationAnalysisTests(unittest.TestCase):
         self.root = Path(self.temporary_directory.name)
         recipe_root = self.root / "recipe"
         recipe_root.mkdir()
-        shutil.copyfile(ETCSL_RECIPE / "inventory.py", recipe_root / "inventory.py")
+        shutil.copyfile(ETCSL_RECIPE / "validator.py", recipe_root / "inventory.py")
+        shutil.copyfile(ETCSL_RECIPE / "validator.py", recipe_root / "validator.py")
         shutil.copyfile(ETCSL_RECIPE / "reader.py", recipe_root / "reader.py")
         (recipe_root / "collection.toml").write_text(
             """
@@ -105,6 +107,7 @@ user_agent = "text-preserver-test/1.0"
         collection_id: str = "etcsl-fixture",
         legacy_recipe_assets: bool = False,
         malformed_bundle_manifest: bool = False,
+        recipe_api: int = 1,
     ) -> Path:
         actual_capture_id = capture_id or self.capture_id
         capture = self.capture.parent / actual_capture_id
@@ -117,7 +120,7 @@ user_agent = "text-preserver-test/1.0"
             recipe_assets = metadata_root / "recipe-assets"
             recipe_assets.mkdir(parents=True)
             if adapter_source is None:
-                shutil.copyfile(ETCSL_RECIPE / "inventory.py", recipe_assets / "inventory.py")
+                shutil.copyfile(ETCSL_RECIPE / "validator.py", recipe_assets / "inventory.py")
             else:
                 (recipe_assets / "inventory.py").write_text(adapter_source, encoding="utf-8")
         else:
@@ -126,7 +129,7 @@ user_agent = "text-preserver-test/1.0"
             if adapter_source is not None:
                 (recipe_bundle / "inventory.py").write_text(adapter_source, encoding="utf-8")
             bundle = scan_recipe_directory(recipe_bundle)
-            manifest = bundle.manifest(recipe_api=1, collection_id=collection_id)
+            manifest = bundle.manifest(recipe_api=recipe_api, collection_id=collection_id)
             if malformed_bundle_manifest:
                 manifest = {"schema_version": 1}
             (metadata_root / "recipe-bundle-manifest.json").write_text(
@@ -216,10 +219,19 @@ user_agent = "text-preserver-test/1.0"
         self.assertEqual(result.report_path.parent.parent.name, "validations")
         self.assertEqual(result.report["validation_id"], result.report_path.parent.name)
         self.assertEqual(result.contributing_capture_ids, (self.capture_id,))
+        self.assertNotIn("contributing_capture_directories", result.report)
+        self.assertEqual(result.contributing_capture_directories, (self.capture.resolve(),))
+        self.assertNotIn("path", result.report["analyzer"])
+        self.assertNotIn(str(self.root), json.dumps(result.report, sort_keys=True))
         self.assertEqual(
-            result.report["contributing_capture_directories"],
-            [str(self.capture.resolve())],
+            result.report["validation_inputs"]["execution_policy"],
+            result.report["execution_policy"],
         )
+        self.assertEqual(
+            result.report["adapter_controls"]["worker"]["filesystem"]["scope"],
+            "language-runtime policy",
+        )
+        self.assertFalse(result.report["adapter_controls"]["full_os_sandbox"]["enforced"])
         validation_root = self.root / "data/derived/collections/etcsl-fixture/validations"
         self.assertEqual(
             (validation_root / "LATEST").read_text(encoding="utf-8").strip(),
@@ -295,10 +307,8 @@ def analyze_capture(capture_directory, **kwargs):
         )
 
         self.assertEqual(result.status, "complete")
-        self.assertEqual(
-            result.report["analyzer"]["path"],
-            str((self.capture / "metadata/recipe-bundle/inventory.py").resolve()),
-        )
+        self.assertEqual(result.report["analyzer"]["source"], "preserved_capture")
+        self.assertNotIn("path", result.report["analyzer"])
 
     def test_rejects_malformed_captured_bundle_manifest(self) -> None:
         self.create_capture(malformed_bundle_manifest=True)
@@ -583,7 +593,7 @@ def analyze_capture(capture_directory, **kwargs):
             encoding="utf-8",
         )
 
-        with self.assertRaisesRegex(AnalysisError, "capture changed during analysis"):
+        with self.assertRaisesRegex(AnalysisError, "filesystem write denied"):
             analyze_preservation(
                 load_config(self.config_path),
                 "etcsl-fixture",
@@ -636,8 +646,10 @@ def analyze_capture(capture_directory, **kwargs):
 """.strip()
         )
 
-        with self.assertRaisesRegex(AnalysisError, "capture changed during analysis"):
+        with self.assertRaisesRegex(AnalysisError, "filesystem write denied"):
             analyze_preservation(load_config(self.config_path), "etcsl-fixture", self.capture)
+
+        self.assertTrue(verify_capture(self.capture).ok)
 
         self.assertFalse(
             (
@@ -698,6 +710,16 @@ def analyze_capture(capture_directory, **kwargs):
         self.assertEqual(len(result.metadata["output_tree"]["sha256"]), 64)
         self.assertEqual(result.metadata["summary"]["work_count"], 4)
         self.assertEqual(result.metadata["renderer"]["source"], "current_recipe")
+        self.assertNotIn("path", result.metadata["renderer"])
+        self.assertNotIn(str(self.root), json.dumps(result.metadata, sort_keys=True))
+        self.assertEqual(
+            result.metadata["build_inputs"]["execution_policy"],
+            result.metadata["execution_policy"],
+        )
+        self.assertEqual(
+            result.metadata["adapter_controls"]["worker"]["filesystem"]["write_scope"],
+            "reader_output",
+        )
         self.assertTrue((result.output_directory / "works/1.8.1.5.1.html").is_file())
         self.assertIn("Composition 1.8.1.5.1", result.index_path.read_text(encoding="utf-8"))
         self.assertTrue(verify_capture(self.capture).ok)
@@ -769,6 +791,89 @@ def analyze_capture(capture_directory, **kwargs):
         )
         self.assertNotEqual(first.metadata["build_key"], second.metadata["build_key"])
 
+    def test_current_api_2_validates_historical_api_1_bundle(self) -> None:
+        self.create_capture()
+        recipe_path = self.root / "recipe/collection.toml"
+        recipe_path.write_text(
+            recipe_path.read_text(encoding="utf-8")
+            .replace("recipe_api = 1", "recipe_api = 2")
+            .replace("inventory_adapter =", "validator_adapter ="),
+            encoding="utf-8",
+        )
+
+        result = analyze_preservation(
+            load_config(self.config_path),
+            "etcsl-fixture",
+            self.capture,
+        )
+
+        self.assertEqual(result.report["recipe_bundle"]["recipe_api"], 1)
+        self.assertEqual(result.report["analyzer"]["source"], "preserved_capture")
+
+    def test_current_api_2_builds_reader_with_historical_api_1_bundle(self) -> None:
+        self.create_capture()
+        recipe_path = self.root / "recipe/collection.toml"
+        recipe_path.write_text(
+            recipe_path.read_text(encoding="utf-8")
+            .replace("recipe_api = 1", "recipe_api = 2")
+            .replace("inventory_adapter =", "validator_adapter ="),
+            encoding="utf-8",
+        )
+
+        result = build_static_reader(
+            load_config(self.config_path),
+            "etcsl-fixture",
+            self.capture,
+        )
+
+        self.assertEqual(result.metadata["recipe_bundle"]["recipe_api"], 1)
+        self.assertEqual(result.metadata["renderer"]["source"], "preserved_capture")
+
+    def test_api_2_validator_rejects_untyped_response(self) -> None:
+        self.create_capture()
+        recipe_path = self.root / "recipe/collection.toml"
+        recipe_path.write_text(
+            recipe_path.read_text(encoding="utf-8")
+            .replace("recipe_api = 1", "recipe_api = 2")
+            .replace(
+                'inventory_adapter = "inventory.py"',
+                'validator_adapter = "inventory.py"\nprefer_preserved_adapter = false',
+            ),
+            encoding="utf-8",
+        )
+        (self.root / "recipe/inventory.py").write_text(
+            'def validate(context):\n    return {"status": "complete"}\n',
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(AnalysisError, "expected ValidationReport"):
+            analyze_preservation(
+                load_config(self.config_path),
+                "etcsl-fixture",
+                self.capture,
+            )
+
+    def test_api_2_reader_rejects_untyped_response(self) -> None:
+        recipe_path = self.root / "recipe/collection.toml"
+        recipe_path.write_text(
+            recipe_path.read_text(encoding="utf-8")
+            .replace("recipe_api = 1", "recipe_api = 2")
+            .replace("inventory_adapter =", "validator_adapter ="),
+            encoding="utf-8",
+        )
+        (self.root / "recipe/reader.py").write_text(
+            'def build_reader(context):\n    return {"status": "complete"}\n',
+            encoding="utf-8",
+        )
+        self.create_capture(recipe_api=2)
+
+        with self.assertRaisesRegex(AnalysisError, "expected ReaderReport"):
+            build_static_reader(
+                load_config(self.config_path),
+                "etcsl-fixture",
+                self.capture,
+            )
+
     def test_changed_renderer_changes_reader_build_key(self) -> None:
         self.create_capture()
         config = load_config(self.config_path)
@@ -808,6 +913,22 @@ def analyze_capture(capture_directory, **kwargs):
         self.assertEqual(len(entries), 1)
         self.assertTrue((entries[0] / "reproducibility.json").is_file())
         self.assertEqual(entries[0].stat().st_mode & 0o222, 0)
+
+    def test_malformed_reader_leaves_current_pointers_untouched(self) -> None:
+        self.create_capture()
+        config = load_config(self.config_path)
+        first = build_static_reader(config, "etcsl-fixture", self.capture)
+        stable = current_reader_index(config, "etcsl-fixture").resolve()
+        latest_reader = self.root / "data/derived/collections/etcsl-fixture/LATEST-READER"
+        pointer_before = latest_reader.read_text(encoding="utf-8")
+        (self.root / "recipe/reader.py").write_text("def broken(:\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(AnalysisError, "SyntaxError"):
+            build_static_reader(config, "etcsl-fixture", self.capture)
+
+        self.assertEqual(current_reader_index(config, "etcsl-fixture").resolve(), stable)
+        self.assertEqual(latest_reader.read_text(encoding="utf-8"), pointer_before)
+        self.assertTrue(first.index_path.is_file())
 
     def test_builds_streaming_static_reader(self) -> None:
         self.create_capture()
@@ -879,7 +1000,7 @@ def write_static_reader(capture_directory, *, output_directory, expected_work_co
             encoding="utf-8",
         )
 
-        with self.assertRaisesRegex(AnalysisError, "hard link"):
+        with self.assertRaisesRegex(AnalysisError, "Python-runtime adapter policy"):
             build_static_reader(
                 load_config(self.config_path),
                 "etcsl-fixture",
@@ -967,12 +1088,13 @@ def render_static_reader(capture_directory, **kwargs):
             encoding="utf-8",
         )
 
-        with self.assertRaisesRegex(AnalysisError, "capture changed during reader generation"):
+        with self.assertRaisesRegex(AnalysisError, "filesystem write denied"):
             build_static_reader(
                 load_config(self.config_path),
                 "etcsl-fixture",
                 self.capture,
             )
+        self.assertTrue(verify_capture(self.capture).ok)
 
     def test_partial_reader_is_incomplete(self) -> None:
         self.create_capture(omit_translation=True)

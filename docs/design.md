@@ -834,7 +834,7 @@ Ciao can identify relationships and tensions without pretending to settle them a
 
 The CLI foundation, `doctor`, `collections list/show`, sequential `capture` execution, and `verify` exist. The remaining commands define the intended interface.
 
-The initial Wget planner disables ambient proxies and redirects. GNU Wget's domain filter does not constrain redirect destinations, so redirect following cannot be enabled until every redirect hop can be checked against the source allowlist.
+The Wget planner disables ambient proxies and native redirects because GNU Wget's domain filter does not constrain redirect destinations. It discovers redirect responses from retained WARC records and records proposals without following them. Only an exact configured `reviewed_redirects` source/target pair can schedule another bounded, redirect-disabled request; each subsequent hop requires its own reviewed pair.
 
 ### Environment and configuration
 
@@ -896,7 +896,7 @@ A private operator configuration may reference public collection recipes:
 recipes = ["public:etcsl"]
 ```
 
-`public:ID` references resolve recipes shipped with the source or installed distribution. Filesystem recipe paths are resolved relative to the operator configuration. An external recipe requires top-level `recipe_api = 1`, contains one `[collection]` table, and is otherwise validated with the same inheritance and strict-key rules as an inline `[[collections]]` table. Inline collections do not declare a recipe API.
+`public:ID` references resolve recursively packaged resources under `text_preserver.builtin_recipes` with `importlib.resources`. Filesystem recipe paths are resolved relative to the operator configuration. An external recipe requires supported top-level `recipe_api = 1` or `recipe_api = 2`, contains one `[collection]` table, and is otherwise validated with the same inheritance and strict-key rules as an inline `[[collections]]` table. Inline collections do not declare a recipe API and retain API 1 behavior.
 
 The external bundle boundary is the selected recipe file's parent directory. Capture recursively includes every bounded regular file, so TOML, adapter modules, fixtures, seeds, rules, templates, and README files remain available. Inline collections synthesize a bundle from only declared recipe-relative `inventory_adapter`, `reader_adapter`, `normalizer`, and `ciao_rules` files rather than recursively copying the configuration directory. Both forms reject symlinks, special files, path escapes, more than 1,000 files, individual files over 16 MiB, or a total over 64 MiB. Only `__pycache__`, `.pyc`, `.pyo`, and `.DS_Store` are excluded as transient cache artifacts.
 
@@ -1017,13 +1017,15 @@ source settings
 
 Collection-specific knowledge should live in recipes, adapters, and rules rather than in hard-coded branches in the generic engine.
 
-Under `recipe_api = 1`, `inventory_adapter` exports `analyze_capture(...)`. If present, `reader_adapter` exports `write_static_reader(...)` or `render_static_reader(...)`; otherwise reader generation uses `inventory_adapter` for legacy and modest recipes. Trusted recipe adapters may use explicit sibling imports for shared collection parsing and package checks. Those assumptions remain in the recipe bundle, not in generic analysis code.
+Under `recipe_api = 1`, `inventory_adapter` exports `analyze_capture(...)`. If present, `reader_adapter` exports `write_static_reader(...)` or `render_static_reader(...)`; otherwise reader generation uses `inventory_adapter` for legacy and modest recipes. Under API 2, `validator_adapter` exports `validate(ValidationContext) -> ValidationReport`; an independently declared `reader_adapter` exports `build_reader(ReaderContext) -> ReaderReport`. API 2 responses are type- and JSON-checked and no reader capability is inferred. Trusted recipe adapters may use explicit sibling imports for shared collection parsing and package checks. Those assumptions remain in the recipe bundle, not in generic analysis code.
 
 Configuration has one semantic authority: the dependency-free loader in `config.py`, which resolves inheritance and validates filesystem, URL/host, and referential constraints. JSON Schemas remain the portable structural description. A conformance suite passes representative valid and invalid raw documents through both validators so shared rules cannot drift unnoticed; semantic rules that depend on resolved defaults or local paths remain runtime-only by design.
 
 Preservation analysis uses the adapter embedded in the immutable capture by default when one capture supplies the selected source view. New captures verify the bundle manifest and use the adapter path declared by authoritative captured `collection.toml`; keeping `__file__` inside the complete bundle permits runtime-relative fixtures and templates. A recipe may set `prefer_preserved_adapter = false` when collection-level completeness criteria are expected to evolve and old captures must be reassessed by the current adapter. An aggregate assembled from multiple captures always uses the current recipe adapter because no capture-time adapter represents that combined input. Reports record the adapter source and hash and warn whenever current recipe code is used. Immutable captures predating bundle manifests may use `metadata/recipe-assets/`; this compatibility path is labeled `legacy_recipe_assets` and deliberately has no bundle digest or recipe API identity.
 
-Recipe adapters are trusted local code, not a sandbox boundary. Filesystem checks protect bundle and derivative paths, but arbitrary third-party Python imports made by an adapter are not sandboxed.
+Recipe adapters are executable Python, but validation and reader adapters no longer execute in the application process. A versioned strict-JSON protocol starts a separate worker with a dedicated output directory, bounded request/response/diagnostic sizes, live file/directory/aggregate-output checks, timeout and process-group termination, and available address-space and per-file-size limits. Complete external and captured bundles are copied to a digest-verified temporary snapshot before import, binding ordinary sibling imports to the recorded bundle identity and avoiding source bytecode caches. The worker verifies adapter bytes before import, denies common Python and POSIX socket/subprocess/mutation APIs, and restricts ordinary writes to the output directory. Capture fixity is checked before and after execution, and publication remains atomic.
+
+This is bounded process isolation, not a complete cross-platform sandbox. Python-level denial can be circumvented by deliberately hostile native or foreign-function code, and filesystem read-only enforcement is not a kernel namespace on every platform. Execution reports identify enforced, unavailable, and best-effort controls. Third-party recipe discovery remains disabled; API 1 support exists only to interpret immutable historical bundles and uses the same subprocess path.
 
 ---
 
@@ -1120,19 +1122,19 @@ The application read model reports acquisition, fixity, validation, and access a
 
 A collection recipe contains the knowledge needed to capture and understand one collection without contaminating the generic engine.
 
-Its file starts with `recipe_api = 1`. That explicit API gates incompatible recipe semantics independently of the operator configuration schema.
+Its file starts with a supported `recipe_api`. API 1 remains frozen for inline and preserved historical recipes; current recipes use API 2's explicit validator and reader capabilities.
 
-Proposed layout:
+Built-in layout:
 
 ```text
-collections/
+src/text_preserver/builtin_recipes/
 └── etcsl/
     ├── collection.toml
     ├── README.md
     ├── seeds/
     │   ├── web.txt
     │   └── repository.txt
-    ├── inventory.py
+    ├── validator.py
     ├── normalize.py
     ├── checks.toml
     ├── rules/
@@ -1298,7 +1300,7 @@ The implemented static reader selects the publisher's aggregate TEI package, exc
 The current recipe layout is:
 
 ```text
-collections/gretil/
+src/text_preserver/builtin_recipes/gretil/
 ├── collection.toml
 ├── README.md
 ├── seeds/
@@ -1306,7 +1308,8 @@ collections/gretil/
 │   ├── bulk-packages.txt
 │   ├── dictionaries.txt
 │   └── frozen-register.txt
-├── inventory.py
+├── validator.py
+├── reader.py
 └── fixtures/
     ├── catalogue.html
     ├── reviewed-tei-ids.txt
@@ -1684,7 +1687,11 @@ Capture metadata should include:
 - previous indexes used for deduplication;
 - operator notes.
 
-Capture manifest schema version 2 stores these values under `payloads.mirror` and `payloads.warc`. `downloaded_files` and `downloaded_bytes` remain persisted compatibility aliases for mirror files and bytes only. CDX parsing is bounded and treats header-only indexes as zero records; absent or unusable CDX leaves the indexed count unknown and permits only bounded WARC-header inspection for response/resource evidence. Symlinks and special payload objects are never followed and are surfaced in source warnings.
+Capture manifest schema version 3 separates provenance by audience. Portable resolved collection, recipe, tool-version, command, source-result, seed, and redirect-proposal records remain shareable. Raw input configuration, exact commands and executable/working paths, hostname, process ID, platform details, operator/contact values, and notes live below `metadata/private/`. Schema 3 also assigns every regular file exactly one role: `preservation_original`, `capture_derivative`, or `metadata`. WARC containers and direct deposits are originals; converted web mirrors are capture-time derivatives. Schemas 1 and 2 remain immutable and their roles are inferred from fixed paths and preserved source metadata.
+
+BagIt export starts from a fully verified capture and verifies it again before atomic publication. The `private` profile copies every capture file byte-for-byte and recreates preserved empty directories. The `public` profile uses a fixed explicit path allowlist for preservation payloads, capture derivatives, the recipe manifest/bundle, and portable provenance; private provenance and logs are not selected. Original capture/fixity manifests are private-profile material because they enumerate private paths and hashes. Public export metadata instead records their digest and a portable capture summary. Export metadata maps each selected source path and role to its bag path, size, and digest and records the exporter version. Independent validation checks BagIt declarations, payload/tag manifests, path safety, checksums, and payload oxum.
+
+WACZ is a derived replay export, never a preservation-master replacement. It accepts only verified `preservation_original` WARC paths permitted by the selected export profile, stores their exact bytes, and generates CDXJ, pages, data-package metadata, and digest offline with bounded per-record parsers. Independent validation does not require the source capture, resolves each CDXJ location back to the corresponding WARC record, and creation verifies that source WARC files and capture fixity remained unchanged.
 
 ### Completeness
 

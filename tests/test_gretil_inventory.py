@@ -12,11 +12,12 @@ import zipfile
 from text_preserver.preservation.capture import plan_capture
 from text_preserver.adapters import _load_adapter
 from text_preserver.config import load_config
+from text_preserver.recipes import public_recipe_path
 
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
-RECIPE_ROOT = REPOSITORY_ROOT / "collections/gretil"
-inventory, _INVENTORY_SOURCE = _load_adapter(RECIPE_ROOT / "inventory.py")
+RECIPE_ROOT = public_recipe_path("gretil").parent
+inventory, _INVENTORY_SOURCE = _load_adapter(RECIPE_ROOT / "validator.py")
 reader, _READER_SOURCE = _load_adapter(RECIPE_ROOT / "reader.py")
 
 
@@ -307,6 +308,8 @@ class GretilInventoryTests(unittest.TestCase):
 
         plan = plan_capture(config, "gretil")
 
+        self.assertEqual(collection.recipe_api, 2)
+        self.assertEqual(collection.analysis["validator_adapter"], "validator.py")
         self.assertEqual(collection.analysis["expected_work_count"], 801)
         self.assertEqual(collection.analysis["reader_adapter"], "reader.py")
         self.assertEqual(collection.analysis["reader_source"], "bulk-packages")

@@ -18,7 +18,7 @@ from text_preserver.recipes import public_recipe_path
 SAFE_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$")
 HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 BYTE_SIZE_RE = re.compile(r"^([1-9][0-9]*)([KkMmGg]?)$")
-SUPPORTED_RECIPE_API = 1
+SUPPORTED_RECIPE_APIS = frozenset({1, 2})
 
 DEFAULT_CAPTURE_SETTINGS: dict[str, Any] = {
     "engine": "wget",
@@ -120,6 +120,7 @@ class SourceConfig:
     required: bool
     seeds: tuple[str, ...]
     allowed_hosts: tuple[str, ...]
+    reviewed_redirects: tuple[tuple[str, str], ...]
     capture: Mapping[str, Any]
 
 
@@ -207,10 +208,10 @@ def load_config(path: str | Path) -> Config:
         recipe_raw, recipe_bytes = _read_toml(recipe_path, "collection recipe")
         _only_keys(recipe_raw, {"recipe_api", "collection"}, f"recipe {recipe_path}")
         recipe_api = recipe_raw.get("recipe_api")
-        if type(recipe_api) is not int or recipe_api != SUPPORTED_RECIPE_API:
+        if type(recipe_api) is not int or recipe_api not in SUPPORTED_RECIPE_APIS:
             raise ConfigError(
-                f"recipe {recipe_path}: recipe_api must be supported value "
-                f"{SUPPORTED_RECIPE_API}"
+                f"recipe {recipe_path}: recipe_api must be one of the supported values "
+                "1 or 2"
             )
         label = f"recipe {recipe_path}: collection"
         collection = _load_collection(
@@ -349,6 +350,7 @@ def _load_collection(
         homepage = _http_url(homepage, f"{label}.homepage", allow_fragment=True)
 
     analysis = _load_analysis(table.get("analysis", {}), f"{label}.analysis")
+    _validate_recipe_capabilities(analysis, recipe_api, f"{label}.analysis")
     reader_source = analysis.get("reader_source")
     if reader_source is not None and reader_source not in seen_source_ids:
         raise ConfigError(
@@ -388,6 +390,7 @@ def _load_source(
             "engine",
             "seeds",
             "allowed_hosts",
+            "reviewed_redirects",
             "capture",
         },
         label,
@@ -409,6 +412,12 @@ def _load_source(
                 f"{label}.seeds[{index}]: host {hostname!r} is not in allowed_hosts"
             )
 
+    reviewed_redirects = _reviewed_redirects(
+        table.get("reviewed_redirects", []),
+        f"{label}.reviewed_redirects",
+        allowed_set,
+    )
+
     capture = dict(collection_capture)
     capture.update(_load_capture_settings(table.get("capture", {}), f"{label}.capture"))
     if "engine" in table:
@@ -417,6 +426,8 @@ def _load_source(
             raise ConfigError(f"{label}.engine: only 'wget' is currently supported")
         capture["engine"] = engine
     _validate_capture_combination(capture, f"{label}.capture")
+    if reviewed_redirects and not capture["warc"]:
+        raise ConfigError(f"{label}.reviewed_redirects: requires WARC capture")
     if kind == "http-file" and capture["recursive"]:
         raise ConfigError(f"{label}.capture.recursive: must be false for an http-file source")
 
@@ -428,6 +439,7 @@ def _load_source(
         required=_boolean(table.get("required", True), f"{label}.required"),
         seeds=seeds,
         allowed_hosts=allowed_hosts,
+        reviewed_redirects=reviewed_redirects,
         capture=MappingProxyType(capture),
     )
 
@@ -436,6 +448,7 @@ def _load_analysis(value: Any, label: str) -> dict[str, Any]:
     table = _table(value, label)
     keys = {
         "inventory_adapter",
+        "validator_adapter",
         "reader_adapter",
         "normalizer",
         "ciao_rules",
@@ -448,6 +461,7 @@ def _load_analysis(value: Any, label: str) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key in {
         "inventory_adapter",
+        "validator_adapter",
         "reader_adapter",
         "normalizer",
         "ciao_rules",
@@ -473,6 +487,25 @@ def _load_analysis(value: Any, label: str) -> dict[str, Any]:
             )
         )
     return result
+
+
+def _validate_recipe_capabilities(
+    analysis: Mapping[str, Any],
+    recipe_api: int | None,
+    label: str,
+) -> None:
+    if recipe_api == 2:
+        if "inventory_adapter" in analysis:
+            raise ConfigError(
+                f"{label}.inventory_adapter: recipe API 2 uses validator_adapter"
+            )
+        if "validator_adapter" not in analysis:
+            raise ConfigError(
+                f"{label}.validator_adapter: recipe API 2 must declare a validator capability"
+            )
+    elif "validator_adapter" in analysis:
+        version = "inline collections" if recipe_api is None else "recipe API 1"
+        raise ConfigError(f"{label}.validator_adapter: not supported by {version}")
 
 
 def _load_capture_settings(value: Any, label: str) -> dict[str, Any]:
@@ -576,8 +609,47 @@ def _host_list(value: Any, label: str) -> list[str]:
     return hosts
 
 
+def _reviewed_redirects(
+    value: Any,
+    label: str,
+    allowed_hosts: set[str],
+) -> tuple[tuple[str, str], ...]:
+    values = _list(value, label)
+    redirects: list[tuple[str, str]] = []
+    seen_from: set[str] = set()
+    seen_edges: set[tuple[str, str]] = set()
+    for index, item in enumerate(values):
+        item_label = f"{label}[{index}]"
+        table = _table(item, item_label)
+        _only_keys(table, {"from", "to"}, item_label)
+        if set(table) != {"from", "to"}:
+            missing = "from" if "from" not in table else "to"
+            raise ConfigError(f"{item_label}: missing key {missing!r}")
+        source_url = _http_url(table["from"], f"{item_label}.from", allow_fragment=False)
+        target_url = _http_url(table["to"], f"{item_label}.to", allow_fragment=False)
+        edge = (source_url, target_url)
+        if source_url == target_url:
+            raise ConfigError(f"{item_label}: redirect endpoints must be different")
+        for field, url in (("from", source_url), ("to", target_url)):
+            hostname = urlsplit(url).hostname
+            if hostname not in allowed_hosts:
+                raise ConfigError(
+                    f"{item_label}.{field}: host {hostname!r} is not in allowed_hosts"
+                )
+        if edge in seen_edges:
+            raise ConfigError(f"{label}: duplicate reviewed redirect edge")
+        if source_url in seen_from:
+            raise ConfigError(f"{label}: duplicate redirect source URL {source_url!r}")
+        seen_edges.add(edge)
+        seen_from.add(source_url)
+        redirects.append(edge)
+    return tuple(redirects)
+
+
 def _http_url(value: Any, label: str, *, allow_fragment: bool) -> str:
     url = _string(value, label)
+    if "\\" in url or any(character.isspace() or ord(character) == 127 for character in url):
+        raise ConfigError(f"{label}: URL contains whitespace or an unsafe character")
     try:
         parts = urlsplit(url)
         _ = parts.port
@@ -588,7 +660,7 @@ def _http_url(value: Any, label: str, *, allow_fragment: bool) -> str:
     if parts.username is not None or parts.password is not None:
         raise ConfigError(f"{label}: credentials are not allowed in URLs")
     if not allow_fragment and parts.fragment:
-        raise ConfigError(f"{label}: URL fragments are not allowed in capture seeds")
+        raise ConfigError(f"{label}: URL fragments are not allowed in capture URLs")
     raw_host = parts.netloc.rsplit("@", 1)[-1].split(":", 1)[0]
     if raw_host != raw_host.lower() or not _valid_host(parts.hostname):
         raise ConfigError(f"{label}: expected an ASCII lowercase hostname")

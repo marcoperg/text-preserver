@@ -18,6 +18,8 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 import xml.etree.ElementTree as ElementTree
 import zipfile
 
+from text_preserver.adapters import ValidationContext, ValidationReport
+
 
 CATALOGUE_URL = "https://etcsl.orinst.ox.ac.uk/cgi-bin/etcsl.cgi?text=all"
 TEXT_ID_RE = re.compile(r"^(?P<kind>[ct])\.(?P<id>[0-9]+(?:\.(?:[0-9]+|[a-z])){2,4})$")
@@ -724,6 +726,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(str(exc))
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["status"] == "complete" else 1
+
+
+def validate(context: ValidationContext) -> ValidationReport:
+    """Validate a capture through the recipe API 2 typed contract."""
+    report = analyze_capture(
+        context.capture_directory,
+        expected_work_count=context.expected_work_count,
+        required_representation_kinds=context.required_representation_kinds,
+        required_source_ids=context.required_source_ids,
+    )
+    details = dict(report)
+    status = details.pop("status")
+    errors = tuple(details.pop("errors"))
+    warnings = tuple(details.pop("warnings"))
+    return ValidationReport(status, errors, warnings, details)
 
 
 if __name__ == "__main__":

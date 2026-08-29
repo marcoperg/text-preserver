@@ -48,7 +48,7 @@ text-preserver analyze preservation gretil -c collections.toml
 text-preserver analyze preservation gretil /path/to/capture-a /path/to/capture-b -c collections.toml
 ```
 
-The `inventory.py` adapter checks source outcomes, selected context assets, register representation counts and lineage gaps, the exact bulk-package and dictionary sets, frozen-register files, ZIP paths, entry counts, expansion limits, encryption, symlinks, compression ratios, CRCs, TEI roots, and internal `xml:id` values. It never extracts archive members. Seventeen reviewed package filenames use longer section-qualified identifiers than the register; those mappings are explicit, while one bulk-only record and one cross-package duplicate remain warnings rather than being silently discarded.
+The `validator.py` adapter checks source outcomes, selected context assets, register representation counts and lineage gaps, the exact bulk-package and dictionary sets, frozen-register files, ZIP paths, entry counts, expansion limits, encryption, symlinks, compression ratios, CRCs, TEI roots, and internal `xml:id` values. It never extracts archive members. Seventeen reviewed package filenames use longer section-qualified identifiers than the register; those mappings are explicit, while one bulk-only record and one cross-package duplicate remain warnings rather than being silently discarded.
 
 `fixtures/reviewed-tei-ids.txt` was generated from the 1,033,721-byte `gretil.html` observed on 2026-08-28 with SHA-256 `4a510b91da2ddc98d341d3e161999f7be208dc0249faecff1735918a1945ec7f`. Tests require its 801 sorted identifiers to reproduce the adapter's baseline digest.
 

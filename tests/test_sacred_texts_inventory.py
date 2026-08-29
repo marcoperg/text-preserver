@@ -12,13 +12,14 @@ from unittest.mock import patch
 
 from text_preserver.preservation.capture import plan_capture
 from text_preserver.config import load_config
+from text_preserver.recipes import public_recipe_path
 
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
-RECIPE_ROOT = REPOSITORY_ROOT / "collections/sacred-texts"
+RECIPE_ROOT = public_recipe_path("sacred-texts").parent
 SPEC = importlib.util.spec_from_file_location(
     "sacred_texts_inventory",
-    RECIPE_ROOT / "inventory.py",
+    RECIPE_ROOT / "validator.py",
 )
 assert SPEC is not None and SPEC.loader is not None
 inventory = importlib.util.module_from_spec(SPEC)

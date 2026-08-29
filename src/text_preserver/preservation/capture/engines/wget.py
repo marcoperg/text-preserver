@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import shlex
 from typing import Any, Mapping
@@ -19,6 +19,7 @@ class WgetCommand:
     working_directory: Path
     argv: tuple[str, ...]
     required_directories: tuple[Path, ...]
+    request_urls: tuple[str, ...]
 
     @property
     def shell_command(self) -> str:
@@ -35,6 +36,27 @@ class WgetCommand:
             "argv": list(self.argv),
             "shell_command": self.shell_command,
             "required_directories": [str(path) for path in self.required_directories],
+            "request_urls": list(self.request_urls),
+        }
+
+    def to_portable_dict(self) -> dict[str, Any]:
+        """Return shareable command provenance without machine-local paths."""
+        argv = ("wget", *self.argv[1:])
+        return {
+            "source_id": self.source_id,
+            "source_kind": self.source_kind,
+            "required": self.required,
+            "success_exit_codes": list(self.success_exit_codes),
+            "working_directory": ".",
+            "argv": list(argv),
+            "shell_command": shlex.join(argv),
+            "required_directories": [
+                path.relative_to(self.working_directory).as_posix()
+                if path != self.working_directory
+                else "."
+                for path in self.required_directories
+            ],
+            "request_urls": list(self.request_urls),
         }
 
 
@@ -68,9 +90,9 @@ def build_wget_command(
         "--no-proxy",
         "--max-redirect=0",
         f"--user-agent={project.user_agent}",
-        f"--output-file={logs_root / 'wget.log'}",
-        f"--hsts-file={metadata_root / 'wget-hsts'}",
-        f"--directory-prefix={mirror_root}",
+        "--output-file=logs/wget.log",
+        "--hsts-file=metadata/wget-hsts",
+        "--directory-prefix=mirror",
         f"--domains={','.join(source.allowed_hosts)}",
         f"--execute=robots={'on' if settings['robots'] else 'off'}",
         f"--wait={_number(settings['wait'])}",
@@ -102,7 +124,7 @@ def build_wget_command(
     if settings["warc"]:
         argv.extend(
             (
-                f"--warc-file={warc_root / 'capture'}",
+                "--warc-file=warc/capture",
                 f"--warc-tempdir={warc_temp_root.relative_to(source_root)}",
                 f"--warc-max-size={settings['warc_max_size']}",
             )
@@ -126,7 +148,38 @@ def build_wget_command(
         working_directory=source_root,
         argv=tuple(argv),
         required_directories=tuple(required_directories),
+        request_urls=source.seeds,
     )
+
+
+def build_redirect_command(
+    command: WgetCommand,
+    target_url: str,
+    sequence: int,
+    *,
+    remaining_quota: int | None = None,
+) -> WgetCommand:
+    """Build one non-recursive, non-following request for a reviewed redirect."""
+    argv = list(command.argv[: -len(command.request_urls)])
+    argv = [
+        value
+        for value in argv
+        if value not in {"--recursive", "--page-requisites", "--convert-links"}
+        and not value.startswith("--level=")
+    ]
+    replacements = {
+        "--output-file=": f"--output-file=logs/wget-redirect-{sequence:04d}.log",
+        "--warc-file=": f"--warc-file=warc/capture-redirect-{sequence:04d}",
+    }
+    for index, value in enumerate(argv):
+        for prefix, replacement in replacements.items():
+            if value.startswith(prefix):
+                argv[index] = replacement
+                break
+        if remaining_quota is not None and value.startswith("--quota="):
+            argv[index] = f"--quota={remaining_quota}"
+    argv.append(target_url)
+    return replace(command, argv=tuple(argv), request_urls=(target_url,))
 
 
 def _number(value: int | float) -> str:

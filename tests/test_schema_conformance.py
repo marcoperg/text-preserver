@@ -6,9 +6,10 @@ import tempfile
 import tomllib
 import unittest
 
-from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema import Draft202012Validator, FormatChecker, RefResolver
 
 from text_preserver.config import ConfigError, load_config
+from text_preserver.recipes import public_recipe_path
 
 from tests.test_config import VALID_CONFIG
 
@@ -46,6 +47,25 @@ class ConfigurationSchemaConformanceTests(unittest.TestCase):
 
     def test_representative_valid_inline_configuration(self) -> None:
         self.assert_both_accept(VALID_CONFIG)
+
+    def test_reviewed_redirect_structure_matches_runtime(self) -> None:
+        valid = VALID_CONFIG.replace(
+            'allowed_hosts = ["example.org"]',
+            'allowed_hosts = ["example.org", "www.example.org"]\n'
+            'reviewed_redirects = [{ from = "https://example.org/old", '
+            'to = "https://www.example.org/new" }]',
+            1,
+        )
+        self.assert_both_accept(valid)
+
+        duplicate = valid.replace(
+            'reviewed_redirects = [{ from = "https://example.org/old", '
+            'to = "https://www.example.org/new" }]',
+            'reviewed_redirects = ['
+            '{ from = "https://example.org/old", to = "https://www.example.org/new" }, '
+            '{ from = "https://example.org/old", to = "https://www.example.org/new" }]',
+        )
+        self.assert_both_reject(duplicate)
 
     def test_empty_recipes_are_valid_when_inline_collection_exists(self) -> None:
         self.assert_both_accept("recipes = []\n\n" + VALID_CONFIG)
@@ -112,6 +132,33 @@ contact = "mailto:test@example.org"
 user_agent = "text-preserver-test/1.0"
 '''.strip()
         self.assert_both_reject(document)
+
+    def test_builtin_recipe_api_2_schema_matches_runtime(self) -> None:
+        config_schema = json.loads(
+            (REPOSITORY_ROOT / "schemas/config.schema.json").read_text(encoding="utf-8")
+        )
+        recipe_schema = json.loads(
+            (REPOSITORY_ROOT / "schemas/collection-recipe.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        validator = Draft202012Validator(
+            recipe_schema,
+            resolver=RefResolver.from_schema(
+                recipe_schema,
+                store={config_schema["$id"]: config_schema},
+            ),
+            format_checker=FormatChecker(),
+        )
+        recipe_path = public_recipe_path("etcsl")
+        raw = tomllib.loads(recipe_path.read_text(encoding="utf-8"))
+
+        validator.validate(raw)
+        invalid = dict(raw)
+        invalid["collection"] = dict(raw["collection"])
+        invalid["collection"]["analysis"] = dict(raw["collection"]["analysis"])
+        invalid["collection"]["analysis"]["inventory_adapter"] = "validator.py"
+        self.assertTrue(list(validator.iter_errors(invalid)))
 
 
 if __name__ == "__main__":

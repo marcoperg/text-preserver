@@ -1,4 +1,4 @@
-recipe_api = 1
+recipe_api = 2
 
 [collection]
 id = "sacred-texts"
@@ -19,7 +19,7 @@ quota = "2G"
 limit_rate = "8M"
 
 [collection.analysis]
-inventory_adapter = "inventory.py"
+validator_adapter = "validator.py"
 expected_work_count = 0
 prefer_preserved_adapter = false
 required_representation_kinds = ["warc-record"]

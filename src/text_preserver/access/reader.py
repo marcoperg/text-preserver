@@ -14,9 +14,14 @@ import secrets
 import shutil
 import stat
 import tempfile
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator, Mapping, NoReturn
 
-from text_preserver.adapters import _adapter_path, _load_adapter
+from text_preserver.adapter_process import (
+    adapter_digest,
+    execution_policy_identity,
+    invoke_adapter,
+)
+from text_preserver.adapters import _adapter_bundle_root, _adapter_path
 from text_preserver.preservation.capture.plan import CAPTURE_ID_RE
 from text_preserver.config import SAFE_ID_RE, CollectionConfig, Config
 from text_preserver.derived import (
@@ -95,28 +100,36 @@ def build_static_reader(
     adapter_value = collection.analysis.get("reader_adapter")
     if adapter_value is None:
         adapter_value = collection.analysis.get("inventory_adapter")
+    if adapter_value is None:
+        adapter_value = collection.analysis.get("validator_adapter")
     if not isinstance(adapter_value, str):
         raise AnalysisError(f"collection {collection.id} has no reader adapter")
+    captured_api = _captured_recipe_api(capture_directory)
     adapter_path, adapter_source, recipe_bundle_identity = _adapter_path(
         config,
         collection,
         capture_directory,
         adapter_value,
-        prefer_preserved=False,
+        capability="reader",
+        prefer_preserved=captured_api == 1 and collection.recipe_api != 1,
     )
-    adapter, adapter_bytes = _load_adapter(adapter_path)
-    write = getattr(adapter, "write_static_reader", None)
-    render = getattr(adapter, "render_static_reader", None)
-    if callable(write):
-        entry_point = "write_static_reader"
-    elif callable(render):
-        entry_point = "render_static_reader"
-    else:
-        raise AnalysisError(
-            "reader adapter does not export write_static_reader() or "
-            f"render_static_reader(): {adapter_path}"
-        )
-    renderer_sha256 = hashlib.sha256(adapter_bytes).hexdigest()
+    if captured_api != 1 and not isinstance(collection.analysis.get("reader_adapter"), str):
+        if collection.recipe_api == 2:
+            raise AnalysisError(f"collection {collection.id} has no reader adapter")
+    recipe_api = recipe_bundle_identity["recipe_api"]
+    runtime_recipe_api = 2 if recipe_api == 2 else 1
+    execution_bundle_root = _adapter_bundle_root(
+        config,
+        collection,
+        adapter_path,
+        recipe_bundle_identity,
+    )
+    entry_point = "build_reader" if runtime_recipe_api == 2 else "api1_reader_dispatch"
+    try:
+        renderer_sha256 = adapter_digest(adapter_path)
+    except (OSError, ValueError) as exc:
+        raise AnalysisError(f"cannot verify reader adapter {adapter_path}: {exc}") from exc
+    execution_policy = execution_policy_identity("reader")
     build_inputs: dict[str, Any] = {
         "schema_version": READER_SCHEMA_VERSION,
         "collection_id": collection.id,
@@ -131,33 +144,55 @@ def build_static_reader(
             "entry_point": entry_point,
         },
         "expected_work_count": expected_work_count,
+        "execution_policy": execution_policy,
     }
     build_key = hashlib.sha256(_canonical_json(build_inputs)).hexdigest()
     relative_parent = Path("collections") / collection.id / "captures" / capture_id
     parent = _ensure_derived_directory(config.project.derived_root, relative_parent)
     output_directory = parent / "reader"
-    staging: Path | None = _create_derived_tree_staging(output_directory)
+    staging = _create_derived_tree_staging(output_directory)
+    staging_cleanup: Path | None = staging
     try:
-        if callable(write):
-            try:
-                payload = write(
-                    capture_directory,
-                    output_directory=staging,
-                    expected_work_count=expected_work_count,
-                )
-            except Exception as exc:
-                raise AnalysisError(f"reader adapter failed {adapter_path}: {exc}") from exc
-            summary, warnings, status = _validate_streamed_reader_payload(payload, adapter_path)
-        elif callable(render):
-            try:
-                payload = render(
-                    capture_directory,
-                    expected_work_count=expected_work_count,
-                )
-            except Exception as exc:
-                raise AnalysisError(f"reader adapter failed {adapter_path}: {exc}") from exc
+        outcome = invoke_adapter(
+            adapter_path,
+            adapter_sha256=renderer_sha256,
+            recipe_api=runtime_recipe_api,
+            operation="reader",
+            context={
+                "capture_directory": str(capture_directory.resolve()),
+                "output_directory": str(staging.resolve()),
+                **(
+                    {"expected_work_count": expected_work_count}
+                    if runtime_recipe_api == 2
+                    else {}
+                ),
+            },
+            arguments=(
+                None
+                if runtime_recipe_api == 2
+                else {"expected_work_count": expected_work_count}
+            ),
+            bundle_root=execution_bundle_root,
+            bundle_sha256=(
+                str(recipe_bundle_identity["sha256"])
+                if execution_bundle_root is not None
+                else None
+            ),
+            bundle_paths=recipe_bundle_identity.get("files"),
+        )
+        if not outcome.ok:
+            assert outcome.error is not None
+            raise AnalysisError(
+                f"reader adapter failed {adapter_path}: "
+                f"{outcome.error['code']}: {outcome.error['message']}"
+            )
+        payload = outcome.result
+        adapter_controls = outcome.controls
+        if isinstance(payload, dict) and payload.get("files") is not None:
             files, summary, warnings, status = _validate_reader_payload(payload, adapter_path)
             _materialize_reader_files(staging, files)
+        else:
+            summary, warnings, status = _validate_streamed_reader_payload(payload, adapter_path)
 
         output_tree = _validate_streamed_reader_tree(staging)
         summary["output_file_count"] = output_tree["file_count"]
@@ -184,11 +219,12 @@ def build_static_reader(
             "recipe_bundle": recipe_bundle_identity,
             "expected_work_count": expected_work_count,
             "renderer": {
-                "path": str(adapter_path),
                 "source": adapter_source,
                 "sha256": renderer_sha256,
                 "entry_point": entry_point,
             },
+            "execution_policy": execution_policy,
+            "adapter_controls": adapter_controls,
             "build_key": build_key,
             "build_inputs": build_inputs,
             "output_tree": output_tree,
@@ -196,13 +232,14 @@ def build_static_reader(
             "warnings": warnings,
         }
         collection_root = parent.parent.parent
+        current_index_path: Path | None
         with _reader_publication_lock(collection_root):
             generation_directory, metadata = _publish_derived_tree(
                 output_directory,
                 staging,
                 metadata,
             )
-            staging = None
+            staging_cleanup = None
             current_reader_updated = status in {"complete", "complete_with_warnings"}
             if current_reader_updated:
                 current_index_path = _update_current_reader_pointer(
@@ -218,9 +255,9 @@ def build_static_reader(
     except (OSError, TypeError, ValueError) as exc:
         raise AnalysisError(f"cannot write static reader {output_directory}: {exc}") from exc
     finally:
-        if staging is not None and staging.exists():
-            _make_tree_writable(staging)
-            shutil.rmtree(staging)
+        if staging_cleanup is not None and staging_cleanup.exists():
+            _make_tree_writable(staging_cleanup)
+            shutil.rmtree(staging_cleanup)
     return ReaderResult(
         capture_directory,
         output_directory,
@@ -487,7 +524,7 @@ def _validate_streamed_reader_payload(
 ) -> tuple[dict[str, Any], list[str], str]:
     if not isinstance(payload, dict):
         raise AnalysisError(f"reader adapter returned an invalid payload: {adapter_path}")
-    if "files" in payload:
+    if payload.get("files") is not None:
         raise AnalysisError(f"streaming reader adapter returned in-memory files: {adapter_path}")
     summary = payload.get("summary", {})
     warnings = payload.get("warnings", [])
@@ -512,7 +549,22 @@ def _validate_streamed_reader_tree(
     directory_count = 0
     total_size = 0
     entries: list[dict[str, Any]] = []
-    for path in sorted(root.rglob("*"), key=lambda value: value.relative_to(root).as_posix()):
+    paths: list[Path] = []
+    for directory, directory_names, file_names in os.walk(root, followlinks=False):
+        directory_count += len(directory_names)
+        if directory_count > 2_000:
+            raise AnalysisError("streaming reader adapter wrote more than 2,000 directories")
+        counted_files = [
+            name for name in file_names if not (allow_metadata and name == "metadata.json")
+        ]
+        count += len(counted_files)
+        if count > 2_000:
+            raise AnalysisError("streaming reader adapter wrote more than 2,000 files")
+        base = Path(directory)
+        paths.extend(base / name for name in (*directory_names, *file_names))
+    count = 0
+    directory_count = 0
+    for path in sorted(paths, key=lambda value: value.relative_to(root).as_posix()):
         path_stat = path.lstat()
         if stat.S_ISLNK(path_stat.st_mode):
             raise AnalysisError(f"streaming reader output contains a symlink: {path}")
@@ -589,6 +641,15 @@ def _validate_streamed_reader_tree(
         "directory_count": directory_count,
         "total_bytes": total_size,
     }
+
+
+def _captured_recipe_api(capture_directory: Path) -> int | None:
+    path = capture_directory / "metadata/recipe-bundle-manifest.json"
+    if not path.is_file() or path.is_symlink():
+        return None
+    value = _read_json(path, "captured recipe bundle manifest")
+    recipe_api = value.get("recipe_api")
+    return recipe_api if type(recipe_api) is int else None
 
 
 def _materialize_reader_files(root: Path, files: Mapping[str, bytes]) -> None:
@@ -690,6 +751,8 @@ def _publish_derived_tree(
         if not renamed and generation.exists() and not generation.is_symlink():
             try:
                 existing = _read_json(generation / "metadata.json", "reader metadata")
+                if existing is None:
+                    raise AnalysisError(f"reader metadata is missing: {generation}")
                 existing_tree = _validate_streamed_reader_tree(generation, allow_metadata=True)
                 _validate_existing_generation(generation, existing, existing_tree, candidate)
             except AnalysisError as validation_exc:
@@ -742,7 +805,7 @@ def _quarantine_reader_candidate(
     metadata: Mapping[str, Any],
     reason: str,
     expected_tree_sha256: str | None,
-) -> None:
+) -> NoReturn:
     build_key = str(metadata["build_key"])
     output_tree = metadata.get("output_tree")
     actual_tree_sha256 = (

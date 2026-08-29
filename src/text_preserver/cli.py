@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sys
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 import webbrowser
 
 from text_preserver import __version__
 from text_preserver.access.reader import build_static_reader, current_reader_index
+from text_preserver.access.wacz import (
+    WaczError,
+    WaczMetadata,
+    create_wacz,
+    validate_wacz,
+)
 from text_preserver.preservation.capture import (
     CaptureExecutionError,
     CapturePlanError,
@@ -21,6 +28,13 @@ from text_preserver.config import CollectionConfig, ConfigError, load_config
 from text_preserver.doctor import inspect_environment
 from text_preserver.derived import AnalysisError
 from text_preserver.preservation.fixity import verify_capture
+from text_preserver.preservation.bagit import BagItError, create_bag, validate_bag
+from text_preserver.preservation.payload_roles import (
+    PayloadRoleError,
+    export_policy,
+    load_verified_capture,
+    preservation_warc_paths,
+)
 from text_preserver.preservation.validation import analyze_preservation
 from text_preserver.lifecycle import collection_lifecycle_status
 
@@ -144,6 +158,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the index path without launching a browser",
     )
     open_reader.add_argument("--json", action="store_true", help="emit the index path as JSON")
+
+    export = subparsers.add_parser("export", help="create or validate interoperable exports")
+    export_commands = export.add_subparsers(dest="export_command", required=True)
+    export_bagit = export_commands.add_parser("bagit", help="export a verified capture as BagIt")
+    _add_export_creation_arguments(export_bagit)
+    export_wacz = export_commands.add_parser("wacz", help="derive a replayable WACZ from capture WARCs")
+    _add_export_creation_arguments(export_wacz)
+    export_wacz.add_argument("--title", help="package title; defaults to the collection and capture IDs")
+    export_wacz.add_argument(
+        "--description",
+        default="Offline replay export derived from a verified text-preserver capture.",
+        help="package description",
+    )
+    export_wacz.add_argument("--main-page-url", help="preferred replay start URL")
+    validate_bagit_parser = export_commands.add_parser(
+        "validate-bagit", help="validate an existing BagIt package"
+    )
+    validate_bagit_parser.add_argument("path", type=Path, help="BagIt directory")
+    validate_bagit_parser.add_argument("--json", action="store_true", help="emit machine-readable results")
+    validate_wacz_parser = export_commands.add_parser(
+        "validate-wacz", help="validate an existing WACZ package"
+    )
+    validate_wacz_parser.add_argument("path", type=Path, help="WACZ file")
+    validate_wacz_parser.add_argument("--json", action="store_true", help="emit machine-readable results")
     return parser
 
 
@@ -173,7 +211,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                 return 0
             if args.collections_command == "status":
-                value = collection_lifecycle_status(config, args.collection_id)
+                value = cast(
+                    dict[str, dict[str, Any]],
+                    collection_lifecycle_status(config, args.collection_id),
+                )
                 if args.json:
                     print(json.dumps(value, indent=2))
                 else:
@@ -215,7 +256,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     capture_id=args.capture_id,
                 )
             else:
-                result = execute_capture(
+                capture_result = execute_capture(
                     config,
                     args.collection_id,
                     source_ids=args.source_ids,
@@ -241,21 +282,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(f"Command: {command.shell_command}")
             return 0
         if args.json:
-            print(json.dumps(result.to_dict(), indent=2))
+            print(json.dumps(capture_result.to_dict(), indent=2))
         else:
-            print(f"Capture: {result.capture_directory}")
-            print(f"Status: {result.status}")
-        return 0 if result.status in {"complete", "complete_with_warnings"} else 1
+            print(f"Capture: {capture_result.capture_directory}")
+            print(f"Status: {capture_result.status}")
+        return 0 if capture_result.status in {"complete", "complete_with_warnings"} else 1
     if args.command == "verify":
-        result = verify_capture(args.path)
+        verification_result = verify_capture(args.path)
         if args.json:
-            print(json.dumps(result.to_dict(), indent=2))
+            print(json.dumps(verification_result.to_dict(), indent=2))
         else:
-            marker = "ok" if result.ok else "FAIL"
-            print(f"[{marker}] {result.capture_directory}: {result.checked_objects} object(s)")
-            for error in result.errors:
+            marker = "ok" if verification_result.ok else "FAIL"
+            print(
+                f"[{marker}] {verification_result.capture_directory}: "
+                f"{verification_result.checked_objects} object(s)"
+            )
+            for error in verification_result.errors:
                 print(f"  {error}")
-        return 0 if result.ok else 1
+        return 0 if verification_result.ok else 1
     if args.command == "validate" or (
         args.command == "analyze" and args.analyze_command == "preservation"
     ):
@@ -263,7 +307,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "derive" and args.derive_command == "reader":
         try:
             config = load_config(args.config)
-            result = build_static_reader(
+            reader_result = build_static_reader(
                 config,
                 args.collection_id,
                 args.capture_path,
@@ -272,16 +316,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"reader error: {exc}", file=sys.stderr)
             return 2
         if args.json:
-            print(json.dumps(result.to_dict(), indent=2))
+            print(json.dumps(reader_result.to_dict(), indent=2))
         else:
-            print(f"Capture: {result.capture_directory}")
-            print(f"Reader: {result.index_path}")
-            if result.current_index_path is not None:
-                print(f"Current reader: {result.current_index_path}")
-            print(f"Status: {result.metadata['status']}")
-            for warning in result.metadata.get("warnings", []):
+            print(f"Capture: {reader_result.capture_directory}")
+            print(f"Reader: {reader_result.index_path}")
+            if reader_result.current_index_path is not None:
+                print(f"Current reader: {reader_result.current_index_path}")
+            print(f"Status: {reader_result.metadata['status']}")
+            for warning in reader_result.metadata.get("warnings", []):
                 print(f"  warning: {warning}")
-        return 0 if result.metadata["status"] in {"complete", "complete_with_warnings"} else 1
+        return 0 if reader_result.metadata["status"] in {"complete", "complete_with_warnings"} else 1
     if args.command == "open" and args.open_command == "reader":
         try:
             config = load_config(args.config)
@@ -299,6 +343,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("open error: browser launch was not accepted", file=sys.stderr)
             return 2
         return 0
+    if args.command == "export":
+        return _run_export(args)
     raise AssertionError(f"unhandled command: {args.command}")
 
 
@@ -310,6 +356,90 @@ def _add_config_argument(parser: argparse.ArgumentParser) -> None:
         default=Path("collections.toml"),
         help="TOML configuration file (default: collections.toml)",
     )
+
+
+def _add_export_creation_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "capture_path",
+        type=Path,
+        help="finalized capture directory or collection pointer directory",
+    )
+    parser.add_argument("destination", type=Path, help="new export path")
+    parser.add_argument(
+        "--profile",
+        choices=("private", "public"),
+        required=True,
+        help="private complete package or public package using the built-in allowlist",
+    )
+    parser.add_argument("--json", action="store_true", help="emit machine-readable results")
+
+
+def _run_export(args: argparse.Namespace) -> int:
+    try:
+        if args.export_command == "validate-bagit":
+            return _report_export_validation(validate_bag(args.path), args.json)
+        elif args.export_command == "validate-wacz":
+            return _report_export_validation(validate_wacz(args.path), args.json)
+        capture = load_verified_capture(args.capture_path)
+        policy = export_policy(capture, args.profile)
+        creation: Any
+        if args.export_command == "bagit":
+            creation = create_bag(
+                capture,
+                args.destination,
+                profile=args.profile,
+                policy=policy,
+            )
+        else:
+            capture_id = str(capture.metadata.get("capture_id", capture.directory.name))
+            collection_id = str(capture.metadata.get("collection_id", "collection"))
+            creation = create_wacz(
+                capture,
+                args.destination,
+                warc_paths=preservation_warc_paths(capture),
+                profile=args.profile,
+                policy=policy,
+                metadata=WaczMetadata(
+                    title=args.title or f"{collection_id} capture {capture_id}",
+                    description=args.description,
+                    created=_capture_timestamp(capture.metadata),
+                    main_page_url=args.main_page_url,
+                ),
+            )
+    except (BagItError, PayloadRoleError, WaczError, OSError) as exc:
+        print(f"export error: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(creation.to_dict(), indent=2))
+    else:
+        print(f"Export: {creation.path}")
+        print(f"Profile: {creation.profile.value}")
+        print(f"Policy: {creation.policy_identifier}")
+    return 0
+
+
+def _report_export_validation(result: Any, json_output: bool) -> int:
+    if json_output:
+        print(json.dumps(result.to_dict(), indent=2))
+    else:
+        marker = "ok" if result.ok else "FAIL"
+        print(f"[{marker}] {result.path}")
+        for error in result.errors:
+            print(f"  {error}")
+    return 0 if result.ok else 1
+
+
+def _capture_timestamp(metadata: Mapping[str, object]) -> str:
+    for key in ("ended_at", "started_at"):
+        value = metadata.get(key)
+        if isinstance(value, str):
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if parsed.tzinfo is not None:
+                return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _add_validation_arguments(parser: argparse.ArgumentParser) -> None:
@@ -353,7 +483,7 @@ def _run_validation(args: argparse.Namespace, *, deprecated: bool) -> int:
     return 0 if result.status in {"complete", "complete_with_warnings"} else 1
 
 
-def _collection_summary(collection: CollectionConfig) -> dict[str, object]:
+def _collection_summary(collection: CollectionConfig) -> dict[str, Any]:
     return {
         "id": collection.id,
         "title": collection.title,
@@ -364,7 +494,7 @@ def _collection_summary(collection: CollectionConfig) -> dict[str, object]:
     }
 
 
-def _collection_detail(collection: CollectionConfig) -> dict[str, object]:
+def _collection_detail(collection: CollectionConfig) -> dict[str, Any]:
     return {
         **_collection_summary(collection),
         "homepage": collection.homepage,

@@ -9,11 +9,12 @@ from unittest.mock import patch
 import zipfile
 
 from text_preserver.adapters import _load_adapter
+from text_preserver.recipes import public_recipe_path
 
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
-RECIPE_ROOT = REPOSITORY_ROOT / "collections/etcsl"
-SPEC = importlib.util.spec_from_file_location("etcsl_inventory", RECIPE_ROOT / "inventory.py")
+RECIPE_ROOT = public_recipe_path("etcsl").parent
+SPEC = importlib.util.spec_from_file_location("etcsl_validator", RECIPE_ROOT / "validator.py")
 assert SPEC is not None and SPEC.loader is not None
 inventory = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = inventory
@@ -106,6 +107,8 @@ class EtcslInventoryTests(unittest.TestCase):
         self.assertTrue(any("etcsl.zip?sequence=11" in seed for seed in dataset.seeds))
         self.assertFalse(any(seed.endswith("/allzip") for seed in dataset.seeds))
         self.assertEqual(collection.analysis["expected_work_count"], 394)
+        self.assertEqual(collection.recipe_api, 2)
+        self.assertEqual(collection.analysis["validator_adapter"], "validator.py")
         self.assertEqual(collection.analysis["reader_adapter"], "reader.py")
         self.assertFalse(hasattr(inventory, "render_static_reader"))
         self.assertTrue(callable(reader.render_static_reader))

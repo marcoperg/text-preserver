@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import secrets
 import shutil
 import signal
@@ -19,12 +20,16 @@ import stat
 import subprocess
 import sys
 import threading
+from urllib.parse import urldefrag, urljoin, urlsplit
 import zlib
 from types import MappingProxyType
 from typing import Any, Iterator, Mapping, Sequence
 
 from text_preserver import __version__
-from text_preserver.preservation.capture.engines.wget import WgetCommand
+from text_preserver.preservation.capture.engines.wget import (
+    WgetCommand,
+    build_redirect_command,
+)
 from text_preserver.preservation.capture.plan import CAPTURE_ID_RE, CapturePlan, plan_capture
 from text_preserver.config import CollectionConfig, Config, SourceConfig
 from text_preserver.preservation.fixity import (
@@ -41,7 +46,12 @@ from text_preserver.preservation.recipe_bundle import (
 )
 
 
-CAPTURE_MANIFEST_SCHEMA_VERSION = 2
+CAPTURE_MANIFEST_SCHEMA_VERSION = 3
+MAX_REDIRECT_HOPS = 8
+MAX_REDIRECT_VISITED = 1_000
+MAX_REDIRECT_RECORDS = 100_000
+MAX_REDIRECT_WARC_BYTES_PER_FILE = 64 * 1024 * 1024
+MAX_REDIRECT_WARC_BYTES_TOTAL = 256 * 1024 * 1024
 MAX_CDX_FILES = 1_000
 MAX_CDX_FILE_BYTES = 512 * 1024 * 1024
 MAX_CDX_TOTAL_BYTES = 1024 * 1024 * 1024
@@ -129,6 +139,7 @@ def execute_capture(
                 collection,
                 plan,
                 operator_note,
+                wget,
                 wget_version,
                 eligible_for_latest=not source_ids,
             )
@@ -195,6 +206,7 @@ def _execute_plan(
     collection: CollectionConfig,
     plan: CapturePlan,
     operator_note: str | None,
+    wget_executable: str,
     wget_version: str,
     eligible_for_latest: bool,
 ) -> CaptureResult:
@@ -208,9 +220,8 @@ def _execute_plan(
         "ended_at": None,
         "selected_sources": [command.source_id for command in plan.commands],
         "sources": [],
+        "payload_roles": [],
     }
-    if operator_note:
-        capture_metadata["operator_note"] = operator_note
 
     capture_path = plan.capture_directory / "capture.json"
     _write_json(capture_path, capture_metadata)
@@ -218,15 +229,29 @@ def _execute_plan(
     try:
         metadata_root = plan.capture_directory / "metadata"
         metadata_root.mkdir()
-        (metadata_root / "input-config.toml").write_bytes(config.input_bytes)
+        private_root = metadata_root / "private"
+        private_root.mkdir()
+        (private_root / "input-config.toml").write_bytes(config.input_bytes)
         if collection.recipe_path is not None:
-            (metadata_root / "input-collection-recipe.toml").write_bytes(
+            (private_root / "input-collection-recipe.toml").write_bytes(
                 config.recipe_input_bytes[collection.recipe_path]
             )
         _preserve_recipe_bundle(config, collection, metadata_root)
         _write_json(
             metadata_root / "environment.json",
             _environment_metadata(wget_version),
+        )
+        _write_json(
+            private_root / "environment.json",
+            _private_environment_metadata(config, wget_executable),
+        )
+        _write_json(
+            private_root / "operator.json",
+            {
+                "operator": config.project.operator,
+                "contact": config.project.contact,
+                "note": operator_note,
+            },
         )
         _write_json(
             metadata_root / "resolved-collection.json",
@@ -252,20 +277,20 @@ def _execute_plan(
         capture_metadata["status"] = "interrupted"
         capture_metadata["ended_at"] = _utc_now()
         capture_metadata["sources"] = results
-        _write_json(capture_path, capture_metadata)
+        _write_terminal_capture(capture_path, capture_metadata, collection)
         raise KeyboardInterrupt from exc
     except KeyboardInterrupt:
         capture_metadata["status"] = "interrupted"
         capture_metadata["ended_at"] = _utc_now()
         capture_metadata["sources"] = results
-        _write_json(capture_path, capture_metadata)
+        _write_terminal_capture(capture_path, capture_metadata, collection)
         raise
     except Exception as exc:
         capture_metadata["status"] = "failed"
         capture_metadata["ended_at"] = _utc_now()
         capture_metadata["sources"] = results
         capture_metadata["error"] = str(exc)
-        _write_json(capture_path, capture_metadata)
+        _write_terminal_capture(capture_path, capture_metadata, collection)
         raise CaptureExecutionError(
             f"capture failed during setup or finalization: {exc}"
         ) from exc
@@ -273,7 +298,7 @@ def _execute_plan(
     capture_metadata["sources"] = results
     capture_metadata["status"] = _aggregate_status(results)
     capture_metadata["ended_at"] = _utc_now()
-    _write_json(capture_path, capture_metadata)
+    _write_terminal_capture(capture_path, capture_metadata, collection)
     try:
         finalize_capture(plan.capture_directory)
     except (ManifestError, OSError) as exc:
@@ -310,9 +335,18 @@ def _execute_source(command: WgetCommand, source: SourceConfig) -> dict[str, Any
         directory.mkdir(parents=True, exist_ok=True)
     source_root = command.working_directory
     metadata_root = source_root / "metadata"
+    private_root = metadata_root / "private"
+    private_root.mkdir()
     _write_text(source_root / "seeds.txt", "\n".join(source.seeds) + "\n")
-    _write_json(metadata_root / "command.json", command.to_dict())
+    _write_command_provenance(metadata_root, [command])
     _write_json(metadata_root / "resolved-source.json", _source_dict(source))
+    redirects_path = metadata_root / "redirects.json"
+    redirect_record: dict[str, Any] = {
+        "max_hops": MAX_REDIRECT_HOPS,
+        "max_visited": MAX_REDIRECT_VISITED,
+        "proposals": [],
+    }
+    _write_json(redirects_path, redirect_record)
 
     result_path = metadata_root / "result.json"
     result: dict[str, Any] = {
@@ -330,10 +364,19 @@ def _execute_source(command: WgetCommand, source: SourceConfig) -> dict[str, Any
     }
     _write_json(result_path, result)
     try:
-        process = _run_wget(command)
+        invocations, processes, redirect_warnings = _run_reviewed_redirects(
+            command,
+            source,
+            redirects_path,
+            redirect_record,
+            metadata_root,
+        )
+        process = processes[0]
         result["exit_code"] = process.returncode
-        if process.stderr.strip():
-            result["warnings"].append(process.stderr.strip())
+        result["warnings"].extend(redirect_warnings)
+        for invocation in processes:
+            if invocation.stderr.strip():
+                result["warnings"].append(invocation.stderr.strip())
     except KeyboardInterrupt:
         result["status"] = "interrupted"
         _record_payloads(result, source_root)
@@ -347,7 +390,18 @@ def _execute_source(command: WgetCommand, source: SourceConfig) -> dict[str, Any
         )
     else:
         has_payload = _record_payloads(result, source_root)
-        if process.returncode in command.success_exit_codes:
+        failed_codes: list[int] = []
+        for command_invocation, completed in zip(invocations, processes, strict=True):
+            if completed.returncode in command.success_exit_codes:
+                continue
+            if _invocation_completed_by_reviewed_redirect(command_invocation, redirect_record):
+                result["warnings"].append(
+                    f"GNU Wget exited with status {completed.returncode} after an explicitly "
+                    "reviewed redirect was followed"
+                )
+                continue
+            failed_codes.append(completed.returncode)
+        if not failed_codes:
             if has_payload:
                 result["status"] = "complete"
             else:
@@ -360,13 +414,180 @@ def _execute_source(command: WgetCommand, source: SourceConfig) -> dict[str, Any
             result["status"] = "partial"
         else:
             result["status"] = "failed"
-        if process.returncode not in command.success_exit_codes:
-            result["error"] = f"GNU Wget exited with status {process.returncode}"
+        if failed_codes:
+            result["error"] = "GNU Wget exited with status " + ", ".join(
+                str(code) for code in failed_codes
+            )
     result["ended_at"] = _utc_now()
     if result["status"] == "complete" and result["warnings"]:
         result["status"] = "complete_with_warnings"
     _write_json(result_path, result)
     return result
+
+
+def _run_reviewed_redirects(
+    command: WgetCommand,
+    source: SourceConfig,
+    redirects_path: Path,
+    redirect_record: dict[str, Any],
+    metadata_root: Path,
+) -> tuple[list[WgetCommand], list[subprocess.CompletedProcess[str]], list[str]]:
+    reviewed = set(source.reviewed_redirects)
+    invocations = [command]
+    processes = [_run_wget(command)]
+    visited = set(command.request_urls)
+    depths = {url: 0 for url in command.request_urls}
+    proposals: dict[tuple[str, str | None, str], dict[str, Any]] = {}
+    warnings: list[str] = []
+
+    while True:
+        discovered, response_urls, discovery_warnings = _discover_warc_redirects(
+            command.working_directory
+        )
+        for warning in discovery_warnings:
+            if warning not in warnings:
+                warnings.append(warning)
+        for response_url in response_urls:
+            visited.add(response_url)
+            depths.setdefault(response_url, 0)
+        proposals_changed = False
+        for source_url, location, target_url in discovered:
+            key = (source_url, target_url, location)
+            if key in proposals:
+                continue
+            proposal: dict[str, Any] = {
+                "from": source_url,
+                "location": location,
+                "to": target_url,
+                "reviewed": target_url is not None
+                and (source_url, target_url) in reviewed,
+                "requested": False,
+            }
+            proposals[key] = proposal
+            proposals_changed = True
+        if proposals_changed:
+            redirect_record["proposals"] = list(proposals.values())
+            _write_json(redirects_path, redirect_record)
+
+        next_proposal: dict[str, Any] | None = None
+        for proposal in proposals.values():
+            source_url = proposal["from"]
+            target_url = proposal["to"]
+            depth = depths.get(source_url, 0)
+            if (
+                proposal["reviewed"]
+                and not proposal["requested"]
+                and isinstance(target_url, str)
+                and target_url not in visited
+                and depth < MAX_REDIRECT_HOPS
+                and len(visited) < MAX_REDIRECT_VISITED
+            ):
+                next_proposal = proposal
+                break
+        if next_proposal is None:
+            break
+
+        target_url = str(next_proposal["to"])
+        remaining_quota = _remaining_redirect_quota(command)
+        if remaining_quota is not None and remaining_quota <= 0:
+            warnings.append("reviewed redirect was not requested because the source quota is exhausted")
+            break
+        next_proposal["requested"] = True
+        redirect_record["proposals"] = list(proposals.values())
+        _write_json(redirects_path, redirect_record)
+        redirect_command = build_redirect_command(
+            command,
+            target_url,
+            len(invocations),
+            remaining_quota=remaining_quota,
+        )
+        invocations.append(redirect_command)
+        _write_command_provenance(metadata_root, invocations)
+        visited.add(target_url)
+        depths[target_url] = depths.get(str(next_proposal["from"]), 0) + 1
+        processes.append(_run_wget(redirect_command))
+    return invocations, processes, warnings
+
+
+def _invocation_completed_by_reviewed_redirect(
+    invocation: WgetCommand,
+    redirect_record: Mapping[str, Any],
+) -> bool:
+    proposals = redirect_record.get("proposals")
+    if not isinstance(proposals, list) or not invocation.request_urls:
+        return False
+    return all(
+        any(
+            isinstance(proposal, dict)
+            and proposal.get("from") == request_url
+            and proposal.get("reviewed") is True
+            and proposal.get("requested") is True
+            for proposal in proposals
+        )
+        for request_url in invocation.request_urls
+    )
+
+
+def _remaining_redirect_quota(command: WgetCommand) -> int | None:
+    value = next(
+        (argument.removeprefix("--quota=") for argument in command.argv if argument.startswith("--quota=")),
+        None,
+    )
+    if value is None:
+        return None
+    match = re.fullmatch(r"([1-9][0-9]*)([KkMmGg]?)", value)
+    if match is None:
+        return 0
+    factor = {"": 1, "k": 1024, "m": 1024**2, "g": 1024**3}[match.group(2).lower()]
+    quota = int(match.group(1)) * factor
+    mirror_files, _warnings = _scan_regular_files(command.working_directory / "mirror")
+    warc_files, _warnings = _scan_regular_files(command.working_directory / "warc")
+    containers = [
+        path
+        for relative, path, _size in warc_files
+        if (not relative.parts or relative.parts[0] != "tmp")
+        and relative.name.lower().endswith((".warc", ".warc.gz"))
+    ]
+    try:
+        retained = (
+            _warc_logical_bytes(containers, quota)
+            if containers
+            else sum(size for _relative, _path, size in mirror_files)
+        )
+    except (EOFError, gzip.BadGzipFile, OSError, zlib.error):
+        return 0
+    return max(0, quota - retained)
+
+
+def _warc_logical_bytes(paths: Sequence[Path], limit: int) -> int:
+    total = 0
+    for path in paths:
+        if path.name.lower().endswith(".gz"):
+            with gzip.open(path, "rb") as stream:
+                while total < limit:
+                    block = stream.read(min(1024 * 1024, limit - total))
+                    if not block:
+                        break
+                    total += len(block)
+        else:
+            total += min(path.stat().st_size, limit - total)
+        if total >= limit:
+            return limit
+    return total
+
+
+def _write_command_provenance(
+    metadata_root: Path,
+    invocations: Sequence[WgetCommand],
+) -> None:
+    portable = invocations[0].to_portable_dict()
+    portable["redirect_commands"] = [
+        invocation.to_portable_dict() for invocation in invocations[1:]
+    ]
+    exact = invocations[0].to_dict()
+    exact["redirect_commands"] = [invocation.to_dict() for invocation in invocations[1:]]
+    _write_json(metadata_root / "command.json", portable)
+    _write_json(metadata_root / "private/command.json", exact)
 
 
 def _run_wget(command: WgetCommand) -> subprocess.CompletedProcess[str]:
@@ -425,10 +646,9 @@ def _collection_dict(collection: CollectionConfig) -> dict[str, Any]:
         "rights_note": collection.rights_note,
         "tags": list(collection.tags),
         "enabled": collection.enabled,
-        "recipe_path": str(collection.recipe_path) if collection.recipe_path else None,
         "recipe_api": collection.recipe_api,
         "capture": _plain(collection.capture),
-        "analysis": _plain(collection.analysis),
+        "analysis": _portable_analysis(collection.analysis),
         "sources": [_source_dict(source) for source in collection.sources],
     }
 
@@ -442,8 +662,27 @@ def _source_dict(source: SourceConfig) -> dict[str, Any]:
         "required": source.required,
         "seeds": list(source.seeds),
         "allowed_hosts": list(source.allowed_hosts),
+        "reviewed_redirects": [
+            {"from": source_url, "to": target_url}
+            for source_url, target_url in source.reviewed_redirects
+        ],
         "capture": _plain(source.capture),
     }
+
+
+def _portable_analysis(analysis: Mapping[str, Any]) -> dict[str, Any]:
+    result = _plain(analysis)
+    for key in (
+        "inventory_adapter",
+        "validator_adapter",
+        "reader_adapter",
+        "normalizer",
+        "ciao_rules",
+    ):
+        value = result.get(key)
+        if isinstance(value, str) and Path(value).is_absolute():
+            result[key] = Path(value).name
+    return result
 
 
 def _preserve_recipe_bundle(
@@ -454,7 +693,13 @@ def _preserve_recipe_bundle(
     base = collection.recipe_path.parent if collection.recipe_path else config.path.parent
     declared = tuple(
         value
-        for key in ("inventory_adapter", "reader_adapter", "normalizer", "ciao_rules")
+        for key in (
+            "inventory_adapter",
+            "validator_adapter",
+            "reader_adapter",
+            "normalizer",
+            "ciao_rules",
+        )
         if isinstance((value := collection.analysis.get(key)), str)
     )
     try:
@@ -506,11 +751,25 @@ def _environment_metadata(wget_version: str) -> dict[str, Any]:
     return {
         "text_preserver_version": __version__,
         "python_version": platform.python_version(),
-        "python_executable": sys.executable,
-        "platform": platform.platform(),
+        "wget_version": wget_version,
+    }
+
+
+def _private_environment_metadata(
+    config: Config,
+    wget_executable: str,
+) -> dict[str, Any]:
+    return {
         "hostname": socket.gethostname(),
         "process_id": os.getpid(),
-        "wget_version": wget_version,
+        "platform_system": platform.system(),
+        "platform_machine": platform.machine(),
+        "python_executable": sys.executable,
+        "wget_executable": wget_executable,
+        "config_path": str(config.path),
+        "archive_root": str(config.project.archive_root),
+        "derived_root": str(config.project.derived_root),
+        "workspace_root": str(config.project.workspace_root),
     }
 
 
@@ -803,6 +1062,179 @@ def _inspect_warc_containers(
     return False, warnings
 
 
+def _discover_warc_redirects(
+    source_root: Path,
+) -> tuple[list[tuple[str, str, str | None]], set[str], list[str]]:
+    warc_files, scan_warnings = _scan_regular_files(source_root / "warc")
+    containers = [
+        item
+        for item in warc_files
+        if (not item[0].parts or item[0].parts[0] != "tmp")
+        and item[0].name.lower().endswith((".warc", ".warc.gz"))
+    ]
+    proposals: list[tuple[str, str, str | None]] = []
+    responses: set[str] = set()
+    warnings = list(scan_warnings)
+    total_bytes = 0
+    total_records = 0
+    for relative, path, _size in containers:
+        remaining = MAX_REDIRECT_WARC_BYTES_TOTAL - total_bytes
+        if remaining <= 0:
+            warnings.append(
+                "redirect discovery stopped at the retained WARC byte limit "
+                f"({MAX_REDIRECT_WARC_BYTES_TOTAL})"
+            )
+            break
+        limit = min(MAX_REDIRECT_WARC_BYTES_PER_FILE, remaining)
+        try:
+            data = _read_warc_prefix(path, limit + 1)
+        except (EOFError, gzip.BadGzipFile, OSError, ValueError, zlib.error) as exc:
+            warnings.append(
+                f"cannot inspect WARC redirects in {relative.as_posix()}: {exc}"
+            )
+            continue
+        if len(data) > limit:
+            warnings.append(
+                f"redirect discovery truncated WARC {relative.as_posix()} at {limit} bytes"
+            )
+            data = data[:limit]
+        total_bytes += len(data)
+        file_proposals, file_responses, records = _redirects_from_warc_bytes(
+            data,
+            MAX_REDIRECT_RECORDS - total_records,
+        )
+        proposals.extend(file_proposals)
+        responses.update(file_responses)
+        total_records += records
+        if total_records >= MAX_REDIRECT_RECORDS:
+            warnings.append(
+                f"redirect discovery stopped at the WARC record limit ({MAX_REDIRECT_RECORDS})"
+            )
+            break
+    return proposals, responses, warnings
+
+
+def _redirects_from_warc_bytes(
+    data: bytes,
+    record_limit: int,
+) -> tuple[list[tuple[str, str, str | None]], set[str], int]:
+    proposals: list[tuple[str, str, str | None]] = []
+    responses: set[str] = set()
+    position = 0
+    records = 0
+    while position < len(data) and records < record_limit:
+        while data[position : position + 2] == b"\r\n":
+            position += 2
+        while data[position : position + 1] == b"\n":
+            position += 1
+        if not data[position:].startswith(b"WARC/"):
+            break
+        header_end, separator_size = _header_end(data, position)
+        if header_end is None:
+            break
+        headers = _header_fields(data[position:header_end])
+        try:
+            content_length = int(headers[b"content-length"])
+        except (KeyError, ValueError):
+            break
+        payload_start = header_end + separator_size
+        payload_end = payload_start + content_length
+        if content_length < 0 or payload_end > len(data):
+            break
+        records += 1
+        target_bytes = headers.get(b"warc-target-uri")
+        if headers.get(b"warc-type", b"").lower() == b"response" and target_bytes:
+            try:
+                response_url = target_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                response_url = ""
+            if response_url.startswith("<") and response_url.endswith(">"):
+                response_url = response_url[1:-1]
+            if _safe_observed_http_url(response_url):
+                responses.add(response_url)
+                proposal = _redirect_from_http_payload(
+                    response_url,
+                    data[payload_start:payload_end],
+                )
+                if proposal is not None:
+                    proposals.append(proposal)
+        position = payload_end
+    return proposals, responses, records
+
+
+def _redirect_from_http_payload(
+    source_url: str,
+    payload: bytes,
+) -> tuple[str, str, str | None] | None:
+    header_end, _separator_size = _header_end(payload, 0)
+    if header_end is None:
+        return None
+    lines = payload[:header_end].splitlines()
+    if not lines:
+        return None
+    status = lines[0].split()
+    if len(status) < 2 or not status[0].startswith(b"HTTP/"):
+        return None
+    try:
+        status_code = int(status[1])
+    except ValueError:
+        return None
+    if not 300 <= status_code <= 399:
+        return None
+    headers = _header_fields(payload[:header_end])
+    location_bytes = headers.get(b"location")
+    if location_bytes is None:
+        return None
+    location = location_bytes.decode("latin-1").strip()
+    resolved_target, _fragment = urldefrag(urljoin(source_url, location))
+    target_url: str | None = resolved_target
+    if not _safe_observed_http_url(resolved_target):
+        target_url = None
+    return source_url, location, target_url
+
+
+def _header_end(data: bytes, position: int) -> tuple[int | None, int]:
+    crlf_end = data.find(b"\r\n\r\n", position)
+    lf_end = data.find(b"\n\n", position)
+    candidates = [
+        (value, 4 if value == crlf_end else 2)
+        for value in (crlf_end, lf_end)
+        if value >= 0
+    ]
+    return min(candidates) if candidates else (None, 0)
+
+
+def _header_fields(block: bytes) -> dict[bytes, bytes]:
+    headers: dict[bytes, bytes] = {}
+    for line in block.splitlines()[1:]:
+        name, separator, value = line.partition(b":")
+        if separator:
+            headers[name.strip().lower()] = value.strip()
+    return headers
+
+
+def _safe_observed_http_url(value: str) -> bool:
+    if "\\" in value or any(
+        character.isspace() or ord(character) == 127 for character in value
+    ):
+        return False
+    try:
+        parts = urlsplit(value)
+        _ = parts.port
+        hostname = parts.hostname or ""
+        hostname.encode("ascii")
+    except (UnicodeEncodeError, ValueError):
+        return False
+    return bool(
+        parts.scheme in {"http", "https"}
+        and hostname
+        and hostname == hostname.lower()
+        and parts.username is None
+        and parts.password is None
+        and not parts.fragment
+    )
+
+
 def _read_warc_prefix(path: Path, limit: int) -> bytes:
     with _open_regular_binary(path) as (stream, _size):
         if path.name.lower().endswith(".gz"):
@@ -851,6 +1283,43 @@ def _write_json(path: Path, value: Any) -> None:
         encoding="utf-8",
     )
     os.replace(temporary, path)
+
+
+def _write_terminal_capture(
+    capture_path: Path,
+    metadata: dict[str, Any],
+    collection: CollectionConfig,
+) -> None:
+    source_kinds = {source.id: source.kind for source in collection.sources}
+    paths = {
+        path.relative_to(capture_path.parent).as_posix()
+        for directory, _directory_names, file_names in os.walk(capture_path.parent)
+        for name in file_names
+        if stat.S_ISREG((path := Path(directory) / name).lstat().st_mode)
+    }
+    paths.update({"capture.json", "SHA256SUMS", "manifest-sha256.json"})
+    metadata["payload_roles"] = [
+        {
+            "path": path,
+            "role": _capture_payload_role(path, source_kinds),
+        }
+        for path in sorted(paths)
+    ]
+    _write_json(capture_path, metadata)
+
+
+def _capture_payload_role(path: str, source_kinds: Mapping[str, str]) -> str:
+    parts = Path(path).parts
+    if len(parts) >= 4 and parts[0] == "sources":
+        if parts[2] == "warc":
+            if path.lower().endswith((".warc", ".warc.gz")):
+                return "preservation_original"
+            return "capture_derivative"
+        if parts[2] == "mirror":
+            if source_kinds.get(parts[1]) == "http-file":
+                return "preservation_original"
+            return "capture_derivative"
+    return "metadata"
 
 
 def _write_text(path: Path, value: str) -> None:
@@ -952,7 +1421,7 @@ def _valid_pointer_target(capture_directory: Path, *, source_id: str | None) -> 
         isinstance(value, str) for value in configured_ids
     ):
         return False
-    return is_complete_full_capture(capture, configured_ids)
+    return is_complete_full_capture(capture, (str(value) for value in configured_ids))
 
 
 def _generate_capture_id() -> str:

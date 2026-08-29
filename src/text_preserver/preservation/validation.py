@@ -11,7 +11,12 @@ from pathlib import Path
 import tempfile
 from typing import Any, Mapping, Sequence
 
-from text_preserver.adapters import _adapter_path, _load_adapter
+from text_preserver.adapter_process import (
+    adapter_digest,
+    execution_policy_identity,
+    invoke_adapter,
+)
+from text_preserver.adapters import _adapter_bundle_root, _adapter_path
 from text_preserver.preservation.capture.plan import CAPTURE_ID_RE
 from text_preserver.config import SAFE_ID_RE, CollectionConfig, Config
 from text_preserver.derived import (
@@ -112,25 +117,36 @@ def analyze_preservation(
     capture_directory = primary.directory
     capture_id = primary.capture_id
 
-    adapter_value = collection.analysis.get("inventory_adapter")
+    adapter_key = "validator_adapter" if collection.recipe_api == 2 else "inventory_adapter"
+    adapter_value = collection.analysis.get(adapter_key)
     if not isinstance(adapter_value, str):
-        raise AnalysisError(f"collection {collection.id} has no inventory adapter")
+        raise AnalysisError(f"collection {collection.id} has no validator adapter")
     aggregate = len(contributing) > 1
     adapter_path, adapter_source, recipe_bundle_identity = _adapter_path(
         config,
         collection,
         capture_directory,
         adapter_value,
+        capability="validator",
         prefer_preserved=(
             False
             if aggregate
             else collection.analysis.get("prefer_preserved_adapter", True)
         ),
     )
-    adapter, adapter_bytes = _load_adapter(adapter_path)
-    analyze = getattr(adapter, "analyze_capture", None)
-    if not callable(analyze):
-        raise AnalysisError(f"inventory adapter does not export analyze_capture(): {adapter_path}")
+    recipe_api = recipe_bundle_identity["recipe_api"]
+    runtime_recipe_api = 2 if recipe_api == 2 else 1
+    execution_bundle_root = _adapter_bundle_root(
+        config,
+        collection,
+        adapter_path,
+        recipe_bundle_identity,
+    )
+    try:
+        adapter_sha256 = adapter_digest(adapter_path)
+    except (OSError, ValueError) as exc:
+        raise AnalysisError(f"cannot verify validator adapter {adapter_path}: {exc}") from exc
+    execution_policy = execution_policy_identity("validate")
 
     expected_work_count = collection.analysis.get("expected_work_count", 0)
     required_representation_kinds = tuple(
@@ -154,13 +170,14 @@ def analyze_preservation(
         "source_capture_map": source_capture_map,
         "analyzer": {
             "source": adapter_source,
-            "sha256": hashlib.sha256(adapter_bytes).hexdigest(),
+            "sha256": adapter_sha256,
         },
         "expected_work_count": expected_work_count,
         "required_representation_kinds": list(required_representation_kinds),
         "required_source_ids": list(required_source_ids),
         "configuration_sha256": configuration_sha256,
         "recipe_bundle": recipe_bundle_identity,
+        "execution_policy": execution_policy,
     }
     validation_id = hashlib.sha256(_canonical_json(validation_inputs)).hexdigest()
     relative_validation = (
@@ -203,31 +220,43 @@ def analyze_preservation(
                     primary,
                     selected_sources,
                 )
-                report = analyze(
+                report, adapter_controls = _run_validator(
+                    runtime_recipe_api,
+                    adapter_path,
+                    adapter_sha256,
                     adapter_capture,
-                    expected_work_count=expected_work_count,
-                    required_representation_kinds=required_representation_kinds,
-                    required_source_ids=required_source_ids,
+                    expected_work_count,
+                    required_representation_kinds,
+                    required_source_ids,
+                    execution_bundle_root,
+                    recipe_bundle_identity.get("sha256"),
+                    recipe_bundle_identity.get("files"),
                 )
         else:
-            report = analyze(
+            report, adapter_controls = _run_validator(
+                runtime_recipe_api,
+                adapter_path,
+                adapter_sha256,
                 capture_directory,
-                expected_work_count=expected_work_count,
-                required_representation_kinds=required_representation_kinds,
-                required_source_ids=required_source_ids,
+                expected_work_count,
+                required_representation_kinds,
+                required_source_ids,
+                execution_bundle_root,
+                recipe_bundle_identity.get("sha256"),
+                recipe_bundle_identity.get("files"),
             )
     except Exception as exc:
-        raise AnalysisError(f"inventory adapter failed {adapter_path}: {exc}") from exc
+        raise AnalysisError(f"validator adapter failed {adapter_path}: {exc}") from exc
     if not isinstance(report, dict) or report.get("status") not in {
         "complete",
         "complete_with_warnings",
         "incomplete",
     }:
-        raise AnalysisError(f"inventory adapter returned an invalid report: {adapter_path}")
+        raise AnalysisError(f"validator adapter returned an invalid report: {adapter_path}")
     for key, expected in (("collection_id", collection.id), ("capture_id", capture_id)):
         if key in report and report[key] != expected:
             raise AnalysisError(
-                f"inventory adapter returned {key} {report[key]!r}, expected {expected!r}"
+                f"validator adapter returned {key} {report[key]!r}, expected {expected!r}"
             )
         report[key] = expected
     report["schema_version"] = VALIDATION_REPORT_SCHEMA_VERSION
@@ -239,18 +268,16 @@ def analyze_preservation(
     report["contributing_capture_ids"] = [
         capture.capture_id for capture in contributing
     ]
-    report["contributing_capture_directories"] = [
-        str(capture.directory) for capture in contributing
-    ]
     report["analyzer"] = {
-        "path": str(adapter_path),
         "source": adapter_source,
-        "sha256": hashlib.sha256(adapter_bytes).hexdigest(),
+        "sha256": adapter_sha256,
     }
+    report["execution_policy"] = execution_policy
+    report["adapter_controls"] = adapter_controls
     if adapter_source != "preserved_capture":
         warnings = report.setdefault("warnings", [])
         if not isinstance(warnings, list):
-            raise AnalysisError("inventory adapter returned invalid warnings")
+            raise AnalysisError("validator adapter returned invalid warnings")
         warnings.append(
             "analysis used the current recipe adapter; result may differ from the capture-time assessment"
         )
@@ -282,6 +309,56 @@ def analyze_preservation(
         tuple(capture.directory for capture in contributing),
         tuple(capture.capture_id for capture in contributing),
     )
+
+
+def _run_validator(
+    recipe_api: int,
+    adapter_path: Path,
+    adapter_sha256: str,
+    capture_directory: Path,
+    expected_work_count: int,
+    required_representation_kinds: tuple[str, ...],
+    required_source_ids: tuple[str, ...],
+    bundle_root: Path | None,
+    bundle_sha256: Any,
+    bundle_paths: Any,
+) -> tuple[Any, dict[str, Any]]:
+    context: dict[str, Any] = {
+        "capture_directory": str(capture_directory.resolve()),
+    }
+    arguments: dict[str, Any] | None
+    if recipe_api == 2:
+        context.update(
+            {
+                "expected_work_count": expected_work_count,
+                "required_representation_kinds": list(required_representation_kinds),
+                "required_source_ids": list(required_source_ids),
+            }
+        )
+        arguments = None
+    else:
+        arguments = {
+            "expected_work_count": expected_work_count,
+            "required_representation_kinds": list(required_representation_kinds),
+            "required_source_ids": list(required_source_ids),
+        }
+    outcome = invoke_adapter(
+        adapter_path,
+        adapter_sha256=adapter_sha256,
+        recipe_api=recipe_api,
+        operation="validate",
+        context=context,
+        arguments=arguments,
+        bundle_root=bundle_root,
+        bundle_sha256=str(bundle_sha256) if bundle_root is not None else None,
+        bundle_paths=bundle_paths,
+    )
+    if not outcome.ok:
+        assert outcome.error is not None
+        raise AnalysisError(
+            f"{outcome.error['code']}: {outcome.error['message']}"
+        )
+    return outcome.result, outcome.controls
 
 
 def _analysis_capture_paths(

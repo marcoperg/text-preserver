@@ -127,7 +127,21 @@
             "pattern": "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$"
           }
         },
+        "reviewed_redirects": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/reviewedRedirect" }
+        },
         "capture": { "$ref": "#/$defs/captureSettings" }
+      }
+    },
+    "reviewedRedirect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to"],
+      "properties": {
+        "from": { "type": "string", "format": "uri", "pattern": "^https?://" },
+        "to": { "type": "string", "format": "uri", "pattern": "^https?://" }
       }
     },
     "analysis": {

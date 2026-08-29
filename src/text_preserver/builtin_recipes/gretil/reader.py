@@ -9,7 +9,9 @@ from typing import Sequence
 import xml.etree.ElementTree as ElementTree
 import zipfile
 
-from .inventory import (
+from text_preserver.adapters import ReaderContext, ReaderReport
+
+from .validator import (
     BULK_TEI_MAPPINGS,
     BULK_TEI_RE,
     BULK_TEI_ROOT_ID_EXCEPTIONS,
@@ -43,6 +45,20 @@ READER_RENDITIONS = frozenset({
     "sup",
     "underline",
 })
+
+
+def build_reader(context: ReaderContext) -> ReaderReport:
+    """Build the existing GRETIL reader through the recipe API 2 contract."""
+    payload = write_static_reader(
+        context.capture_directory,
+        output_directory=context.output_directory,
+        expected_work_count=context.expected_work_count,
+    )
+    return ReaderReport(
+        payload["status"],
+        payload["summary"],
+        tuple(payload["warnings"]),
+    )
 
 
 def write_static_reader(

@@ -6,11 +6,60 @@
   "additionalProperties": false,
   "required": ["recipe_api", "collection"],
   "properties": {
-    "recipe_api": {
-      "const": 1
+    "recipe_api": {},
+    "collection": {}
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "recipe_api": { "const": 1 },
+        "collection": { "$ref": "config.schema.json#/$defs/collection" }
+      }
     },
-    "collection": {
-      "$ref": "config.schema.json#/$defs/collection"
+    {
+      "properties": {
+        "recipe_api": { "const": 2 },
+        "collection": { "$ref": "#/$defs/collectionApi2" }
+      }
+    }
+  ],
+  "$defs": {
+    "analysisApi2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["validator_adapter"],
+      "properties": {
+        "validator_adapter": { "type": "string", "minLength": 1 },
+        "reader_adapter": { "type": "string", "minLength": 1 },
+        "normalizer": { "type": "string", "minLength": 1 },
+        "ciao_rules": { "type": "string", "minLength": 1 },
+        "reader_source": { "$ref": "config.schema.json#/$defs/safeId" },
+        "expected_work_count": { "type": "integer", "minimum": 0 },
+        "prefer_preserved_adapter": { "type": "boolean" },
+        "required_representation_kinds": { "$ref": "config.schema.json#/$defs/stringList" }
+      }
+    },
+    "collectionApi2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "sources", "analysis"],
+      "properties": {
+        "id": { "$ref": "config.schema.json#/$defs/safeId" },
+        "title": { "type": "string", "minLength": 1 },
+        "homepage": { "type": "string", "format": "uri", "pattern": "^https?://" },
+        "description": { "type": "string" },
+        "risk_note": { "type": "string" },
+        "rights_note": { "type": "string" },
+        "tags": { "$ref": "config.schema.json#/$defs/stringList" },
+        "enabled": { "type": "boolean" },
+        "capture": { "$ref": "config.schema.json#/$defs/captureSettings" },
+        "analysis": { "$ref": "#/$defs/analysisApi2" },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "config.schema.json#/$defs/source" }
+        }
+      }
     }
   }
 }

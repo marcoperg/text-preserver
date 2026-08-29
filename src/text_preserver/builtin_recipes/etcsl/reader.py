@@ -10,7 +10,9 @@ from typing import Sequence
 import xml.etree.ElementTree as ElementTree
 import zipfile
 
-from .inventory import (
+from text_preserver.adapters import ReaderContext, ReaderReport
+
+from .validator import (
     BUILTIN_ENTITIES,
     ENTITY_REF_RE,
     InventoryError,
@@ -106,6 +108,20 @@ TITLE_SUFFIXES = (
     " -- a composite transliteration",
     " -- an English prose translation",
 )
+
+
+def build_reader(context: ReaderContext) -> ReaderReport:
+    """Build the existing ETCSL reader through the recipe API 2 contract."""
+    payload = render_static_reader(
+        context.capture_directory,
+        expected_work_count=context.expected_work_count,
+    )
+    return ReaderReport(
+        payload["status"],
+        payload["summary"],
+        tuple(payload["warnings"]),
+        payload["files"],
+    )
 
 
 def render_static_reader(
