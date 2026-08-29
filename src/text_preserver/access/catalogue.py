@@ -354,7 +354,9 @@ LIMIT ?
 """
     try:
         connection = sqlite3.connect(_sqlite_readonly_uri(database), uri=True)
-        connection.enable_load_extension(False)
+        disable_extensions = getattr(connection, "enable_load_extension", None)
+        if disable_extensions is not None:
+            disable_extensions(False)
         rows = connection.execute(sql, parameters).fetchall()
     except sqlite3.Error as exc:
         raise AnalysisError(f"cannot query catalogue: {exc}") from exc
@@ -761,7 +763,9 @@ def _validate_database(path: Path, *, verify_external_content: bool = False) -> 
         else sqlite3.connect(_sqlite_readonly_uri(path), uri=True)
     )
     try:
-        connection.enable_load_extension(False)
+        disable_extensions = getattr(connection, "enable_load_extension", None)
+        if disable_extensions is not None:
+            disable_extensions(False)
         if connection.execute("PRAGMA application_id").fetchone()[0] != CATALOGUE_APPLICATION_ID:
             raise ValueError("catalogue database application ID is invalid")
         if connection.execute("PRAGMA user_version").fetchone()[0] != CATALOGUE_SCHEMA_VERSION:
